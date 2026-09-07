@@ -1,0 +1,56 @@
+# CLAUDE.md
+
+Guidance for Claude Code when working in this repository.
+
+## What Coinbath is
+
+Coinbath is a sous vide controller heated by a Bitcoin miner. It is
+a companion to mujina-miner (`../mujina/`). The miner heats the
+water; Coinbath reads thermistors, holds a setpoint, and asks the
+miner for a share of its full power through the Mujina REST API at
+`http://127.0.0.1:7785`. The API offers Coinbath
+`target_power_fraction`, 0.0 to 1.0, and never a frequency.
+
+Read `README.md` first.
+
+## Shape
+
+One process, one binary, one systemd unit. `state.rs` holds the
+state task: it owns the snapshot, applies commands, and publishes
+over a `tokio::sync::watch` channel. Every client reads the
+snapshot through `Client` and changes it only by sending a
+`Command`. This is the rule that keeps curl useful as the debugger
+and the UI honest. Do not add a second owner of any of the state.
+
+Temperatures are degrees Celsius everywhere inside the program.
+Unit conversion belongs to whatever renders a number for a person.
+
+## Layout
+
+- `main.rs` starts the state task, the data source, and the
+  clients, and stops them on SIGINT or SIGTERM
+- `state.rs` snapshot, commands, and the state task
+- `config.rs` the TOML configuration file
+- `sim.rs` a simulated bath for running without hardware
+
+`../coinbath-v1/` is the previous version. Borrow from it only
+where it agrees with the shape above.
+
+## Build and run
+
+```bash
+just checks       # fmt --check, clippy -D warnings, tests
+just run          # the daemon here, simulated bath, debug logs
+just install      # build on the Pi and restart the service
+just logs         # follow the service journal on the Pi
+```
+
+The Pi is `coinbath` on Tailscale. Always ask before running
+anything on the Pi. The rig boards have water plates and no fans,
+so they must not hash without water flowing.
+
+## Style
+
+Follow `.editorconfig`. Wrap markdown prose at 72 characters. Write
+unit tests for behavior, not for constants. Use `anyhow` for
+application errors. Comments say why, not what.

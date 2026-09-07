@@ -1,0 +1,4 @@
+# Coinbath configuration. Installed to /etc/coinbath.toml.
+
+# Target bath temperature in degrees Celsius. 51.1 C is 124 F.
+setpoint_c = 51.1

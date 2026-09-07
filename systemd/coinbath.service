@@ -1,0 +1,19 @@
+[Unit]
+Description=Coinbath sous vide controller
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/coinbath
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=coinbath=info
+Environment=COINBATH_CONFIG=/etc/coinbath.toml
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=coinbath
+DynamicUser=yes
+SupplementaryGroups=video i2c
+
+[Install]
+WantedBy=multi-user.target
