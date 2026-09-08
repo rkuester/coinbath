@@ -1,5 +1,6 @@
 //! Configuration file handling.
 
+use std::net::SocketAddr;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -10,6 +11,15 @@ use serde::Deserialize;
 pub struct Config {
     /// Target bath temperature in degrees Celsius.
     pub setpoint_c: f64,
+
+    /// Address the HTTP JSON API listens on.
+    #[serde(default = "default_api_listen")]
+    pub api_listen: SocketAddr,
+}
+
+/// Loopback only; Mujina is on 7785 next door.
+fn default_api_listen() -> SocketAddr {
+    "127.0.0.1:7786".parse().expect("literal address parses")
 }
 
 impl Config {
@@ -44,6 +54,15 @@ mod tests {
     fn parses_setpoint() {
         let config = Config::parse("setpoint_c = 51.1\n").unwrap();
         assert_eq!(config.setpoint_c, 51.1);
+    }
+
+    #[test]
+    fn api_listen_defaults_to_loopback() {
+        let config = Config::parse("setpoint_c = 51.1\n").unwrap();
+        assert!(config.api_listen.ip().is_loopback());
+
+        let config = Config::parse("setpoint_c = 51.1\napi_listen = \"0.0.0.0:8080\"\n").unwrap();
+        assert_eq!(config.api_listen.port(), 8080);
     }
 
     #[test]

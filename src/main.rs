@@ -18,16 +18,22 @@ async fn main() -> Result<()> {
     let config_path =
         std::env::var("COINBATH_CONFIG").unwrap_or_else(|_| "/etc/coinbath.toml".to_string());
     let config = Config::load(Path::new(&config_path))?;
-    tracing::info!(setpoint_c = config.setpoint_c, "loaded {config_path}");
+    tracing::info!(
+        setpoint_c = config.setpoint_c,
+        api_listen = %config.api_listen,
+        "loaded {config_path}"
+    );
 
     let (client, state_task) = state::spawn(State::new(config.setpoint_c, &sim::PROBE_NAMES));
     let source = tokio::spawn(sim::run(client.clone()));
+    let api = tokio::spawn(coinbath::api::serve(client.clone(), config.api_listen));
     let logger = tokio::spawn(log_changes(client.clone()));
 
     wait_for_shutdown().await?;
     tracing::info!("shutting down");
 
     source.abort();
+    api.abort();
     logger.abort();
     drop(client);
     state_task.await.context("state task panicked")?;

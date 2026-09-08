@@ -28,6 +28,11 @@ test:
 run *args:
     RUST_LOG=coinbath=debug COINBATH_CONFIG=coinbath.toml cargo run --locked --bin coinbath {{args}}
 
+# Run the CLI here
+[group('dev')]
+cli *args:
+    cargo run -q --locked --bin coinbath-cli -- {{args}}
+
 # Sync coinbath source to the Pi
 [group('remote')]
 deploy:
@@ -42,16 +47,16 @@ remote-run *args: deploy
 [group('remote')]
 install: deploy
     ssh {{host}} "cd {{remote_dir}} && cargo build --locked --release"
-    ssh {{host}} "sudo install -m 755 {{remote_dir}}/target/release/coinbath /usr/local/bin/"
+    ssh {{host}} "sudo install -m 755 {{remote_dir}}/target/release/coinbath {{remote_dir}}/target/release/coinbath-cli /usr/local/bin/"
     ssh {{host}} "test -f /etc/coinbath.toml || sudo install -m 644 {{remote_dir}}/coinbath.toml /etc/coinbath.toml"
     ssh {{host}} "sudo install -m 644 {{remote_dir}}/systemd/coinbath.service /etc/systemd/system/"
     ssh {{host}} "sudo systemctl daemon-reload && sudo systemctl enable coinbath && sudo systemctl restart coinbath"
 
-# Stop, disable, and remove the service and binary
+# Stop, disable, and remove the service and binaries
 [group('remote')]
 uninstall:
     ssh {{host}} "sudo systemctl disable --now coinbath || true"
-    ssh {{host}} "sudo rm -f /etc/systemd/system/coinbath.service /usr/local/bin/coinbath"
+    ssh {{host}} "sudo rm -f /etc/systemd/system/coinbath.service /usr/local/bin/coinbath /usr/local/bin/coinbath-cli"
     ssh {{host}} "sudo systemctl daemon-reload"
 
 # Restart the coinbath service

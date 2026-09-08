@@ -2,3 +2,6 @@
 
 # Target bath temperature in degrees Celsius. 51.1 C is 124 F.
 setpoint_c = 51.1
+
+# Address the HTTP JSON API listens on. Loopback by default.
+# api_listen = "127.0.0.1:7786"

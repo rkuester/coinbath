@@ -25,6 +25,31 @@ The daemon reads `/etc/coinbath.toml`, or the file named by
 `COINBATH_CONFIG`. `coinbath.toml` in this directory is the
 reference configuration.
 
+## API
+
+The daemon listens on `127.0.0.1:7786` unless `api_listen` in the
+configuration says otherwise. Temperatures are degrees Celsius.
+
+```bash
+# The snapshot: setpoint, probes, miner
+curl http://127.0.0.1:7786/api/v0/state
+
+# Set the bath to 51.1 C; the reply is the snapshot after the change
+curl -X PUT -H 'content-type: application/json' -d '51.1' \
+  http://127.0.0.1:7786/api/v0/setpoint
+```
+
+A setpoint outside 0 to 95 C is refused with 400 and the reason.
+
+`coinbath-cli` wraps the same two calls:
+
+```bash
+coinbath-cli status          # setpoint, probes, miner, in C and F
+coinbath-cli json            # the raw snapshot
+coinbath-cli setpoint 51.1   # degrees Celsius
+coinbath-cli setpoint -f 124 # degrees Fahrenheit
+```
+
 ## Hardware
 
 - Raspberry Pi 5, shared with mujina-minerd

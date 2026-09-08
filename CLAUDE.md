@@ -30,8 +30,11 @@ Unit conversion belongs to whatever renders a number for a person.
 - `main.rs` starts the state task, the data source, and the
   clients, and stops them on SIGINT or SIGTERM
 - `state.rs` snapshot, commands, and the state task
+- `api.rs` the HTTP JSON API, a client of the state task
 - `config.rs` the TOML configuration file
 - `sim.rs` a simulated bath for running without hardware
+- `bin/cli.rs` the command-line client, which talks to the API
+  and never to the state task directly
 
 `../coinbath-v1/` is the previous version. Borrow from it only
 where it agrees with the shape above.
@@ -41,6 +44,7 @@ where it agrees with the shape above.
 ```bash
 just checks       # fmt --check, clippy -D warnings, tests
 just run          # the daemon here, simulated bath, debug logs
+just cli status   # the CLI against the daemon running here
 just install      # build on the Pi and restart the service
 just logs         # follow the service journal on the Pi
 ```

@@ -5,6 +5,8 @@
 //! back a `Client`, which is cheap to clone and holds one end of
 //! each channel.
 
+use std::fmt;
+
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -56,6 +58,18 @@ impl State {
         }
     }
 }
+
+/// A command the state task refused, with the reason.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rejected(pub String);
+
+impl fmt::Display for Rejected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Rejected {}
 
 /// A change a client asks the state task to make.
 #[derive(Debug)]
@@ -163,13 +177,16 @@ fn apply(state: &mut State, command: Command) -> bool {
 const SETPOINT_RANGE_C: std::ops::RangeInclusive<f64> = 0.0..=95.0;
 
 fn validate_setpoint(celsius: f64) -> Result<()> {
-    anyhow::ensure!(
-        celsius.is_finite() && SETPOINT_RANGE_C.contains(&celsius),
-        "setpoint {celsius} C is outside {}..={} C",
-        SETPOINT_RANGE_C.start(),
-        SETPOINT_RANGE_C.end()
-    );
-    Ok(())
+    if celsius.is_finite() && SETPOINT_RANGE_C.contains(&celsius) {
+        Ok(())
+    } else {
+        Err(Rejected(format!(
+            "setpoint {celsius} C is outside {}..={} C",
+            SETPOINT_RANGE_C.start(),
+            SETPOINT_RANGE_C.end()
+        ))
+        .into())
+    }
 }
 
 #[cfg(test)]
@@ -192,7 +209,8 @@ mod tests {
     async fn rejected_setpoint_leaves_state_alone() {
         let (client, _task) = spawn(State::new(50.0, &["bath"]));
 
-        assert!(client.set_setpoint(150.0).await.is_err());
+        let err = client.set_setpoint(150.0).await.unwrap_err();
+        assert!(err.downcast_ref::<Rejected>().is_some());
         assert!(client.set_setpoint(f64::NAN).await.is_err());
 
         assert_eq!(client.state().setpoint_c, 50.0);
