@@ -22,8 +22,12 @@ just install    # build on the Pi, install, and start the service
 ```
 
 The daemon reads `/etc/coinbath.toml`, or the file named by
-`COINBATH_CONFIG`. `coinbath.toml` in this directory is the
-reference configuration.
+`--config` or `COINBATH_CONFIG`. `coinbath.toml` in this directory
+is the reference configuration. It names the ADC bus, the divider
+supply, and one `[[probe]]` per thermistor with its channel,
+divider resistor, Steinhart-Hart coefficients, and calibration
+offset. With `--sim` the daemon ignores the probes and runs a
+simulated bath instead.
 
 ## API
 

@@ -75,7 +75,11 @@ pub async fn run(client: Client) -> Result<()> {
         let readings = [bath.bath_c, bath.inlet_c(), bath.outlet_c(power_fraction)];
         for (index, celsius) in readings.into_iter().enumerate() {
             client
-                .send(Command::ProbeReading { index, celsius })
+                .send(Command::ProbeReading {
+                    index,
+                    volts: None,
+                    celsius: Some(celsius),
+                })
                 .await?;
         }
         client

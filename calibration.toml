@@ -1,0 +1,84 @@
+# Calibration points taken 2026-09-08 on the hotel desk, with the
+# loop soaked and the reference thermometer in the bath. Reference
+# temperatures are the thermometer's whole-Fahrenheit readings in
+# Celsius. Fit with `coinbath-cli fit`; results are in coinbath.toml.
+
+[[point]]
+label = "cold"
+reference_c = 30.556
+taken = 1788853767
+
+[[point.samples]]
+probe = "inlet"
+volts = 1.8294999999999995
+supply_v = 3.304000000000001
+spread_v = 0.006000000000000005
+
+[[point.samples]]
+probe = "outlet"
+volts = 1.8025999999999995
+supply_v = 3.304000000000001
+spread_v = 0.0040000000000000036
+
+[[point.samples]]
+probe = "bath"
+volts = 1.8332000000000002
+supply_v = 3.304000000000001
+spread_v = 0.03200000000000003
+
+[[point]]
+label = "ice"
+reference_c = 0.0
+taken = 1788854033
+
+[[point.samples]]
+probe = "bath"
+volts = 0.7849
+supply_v = 3.304000000000001
+spread_v = 0.014000000000000012
+
+[[point]]
+label = "warm"
+reference_c = 41.111
+taken = 1788882413
+
+[[point.samples]]
+probe = "inlet"
+volts = 2.1635
+supply_v = 3.3031000000000006
+spread_v = 0.0040000000000000036
+
+[[point.samples]]
+probe = "outlet"
+volts = 2.1394
+supply_v = 3.3031000000000006
+spread_v = 0.0040000000000000036
+
+[[point.samples]]
+probe = "bath"
+volts = 2.1739
+supply_v = 3.3031000000000006
+spread_v = 0.03799999999999981
+
+[[point]]
+label = "hot"
+reference_c = 48.889
+taken = 1788888387
+
+[[point.samples]]
+probe = "inlet"
+volts = 2.3557000000000006
+supply_v = 3.303300000000001
+spread_v = 0.0040000000000000036
+
+[[point.samples]]
+probe = "outlet"
+volts = 2.3446999999999996
+supply_v = 3.303300000000001
+spread_v = 0.0040000000000000036
+
+[[point.samples]]
+probe = "bath"
+volts = 2.3853
+supply_v = 3.303300000000001
+spread_v = 0.0259999999999998

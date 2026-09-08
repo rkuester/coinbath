@@ -5,3 +5,57 @@ setpoint_c = 51.1
 
 # Address the HTTP JSON API listens on. Loopback by default.
 # api_listen = "127.0.0.1:7786"
+
+# The ADS1015 ADC and the thermistor dividers it reads.
+# i2c_bus = "/dev/i2c-1"
+# Divider supply in volts, used when vcc_channel is unset or reads
+# out of range.
+# vcc = 3.3
+# ADC input wired to the divider supply, read every cycle so the
+# conversion does not depend on the rail's exact voltage.
+vcc_channel = 0
+
+# One [[probe]] per thermistor, in the order the state reports
+# them. Each divider runs from 3.3 V through the thermistor to the
+# ADC input, then through the fixed resistor to ground. Each probe
+# gives its ADC channel (0 to 3), the fixed resistor in ohms,
+# Steinhart-Hart coefficients, and an optional offset_c added after
+# conversion, from calibration against a reference thermometer. The
+# coefficients below were fitted on 2026-09-08 from the points in
+# calibration.toml: ice for the bath probe, and 87 F, 106 F, and
+# 120 F with the whole loop soaked and a reference thermometer in
+# the bath. The bath probe has a three-coefficient least-squares
+# fit over four points, residuals within 0.06 C from 0 C to 49 C.
+# The plate probes have two-coefficient fits over three points,
+# residuals within 0.27 C from 30 C to 49 C, which is the
+# thermometer's rounding. Checked afterward at 115 F (46.11 C),
+# not used in the fit: inlet +0.05 C, outlet +0.15 C, bath -0.05 C.
+# The channel map was found by plugging the probes in one at a
+# time.
+
+[[probe]]
+name = "inlet"
+channel = 3
+divider_resistor = 10000.0
+a = 8.754671e-4
+b = 2.688544e-4
+c = 0.0
+offset_c = 0.0
+
+[[probe]]
+name = "outlet"
+channel = 2
+divider_resistor = 10000.0
+a = 9.178753e-4
+b = 2.631089e-4
+c = 0.0
+offset_c = 0.0
+
+[[probe]]
+name = "bath"
+channel = 1
+divider_resistor = 10000.0
+a = 1.223283e-3
+b = 2.160578e-4
+c = 1.752294e-7
+offset_c = 0.0

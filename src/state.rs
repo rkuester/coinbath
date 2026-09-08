@@ -17,8 +17,12 @@ use tokio::task::JoinHandle;
 pub struct Probe {
     /// Probe name, such as "bath", "inlet", or "outlet".
     pub name: String,
-    /// Last reading in degrees Celsius, or None before the first.
+    /// Last reading in degrees Celsius, or None before the first
+    /// or while the probe is open or shorted.
     pub celsius: Option<f64>,
+    /// The divider voltage behind the last reading, or None when
+    /// the source has no ADC.
+    pub volts: Option<f64>,
 }
 
 /// What the miner reports, as far as Coinbath cares.
@@ -38,6 +42,8 @@ pub struct State {
     /// Target bath temperature in degrees Celsius.
     pub setpoint_c: f64,
     pub probes: Vec<Probe>,
+    /// The divider supply as last measured, in volts.
+    pub supply_v: Option<f64>,
     pub miner: Miner,
 }
 
@@ -52,8 +58,10 @@ impl State {
                 .map(|name| Probe {
                     name: name.to_string(),
                     celsius: None,
+                    volts: None,
                 })
                 .collect(),
+            supply_v: None,
             miner: Miner::default(),
         }
     }
@@ -79,8 +87,16 @@ pub enum Command {
         celsius: f64,
         reply: oneshot::Sender<Result<()>>,
     },
-    /// Records a probe reading, by probe index.
-    ProbeReading { index: usize, celsius: f64 },
+    /// Records a probe reading, by probe index. `celsius` is None
+    /// when the probe is open or shorted; `volts` is None when the
+    /// source has no ADC.
+    ProbeReading {
+        index: usize,
+        volts: Option<f64>,
+        celsius: Option<f64>,
+    },
+    /// Records the measured divider supply.
+    Supply { volts: f64 },
     /// Records what the miner last reported.
     MinerReport(Miner),
 }
@@ -155,9 +171,14 @@ fn apply(state: &mut State, command: Command) -> bool {
             let _ = reply.send(result);
             accepted
         }
-        Command::ProbeReading { index, celsius } => match state.probes.get_mut(index) {
+        Command::ProbeReading {
+            index,
+            volts,
+            celsius,
+        } => match state.probes.get_mut(index) {
             Some(probe) => {
-                probe.celsius = Some(celsius);
+                probe.celsius = celsius;
+                probe.volts = volts;
                 true
             }
             None => {
@@ -165,6 +186,10 @@ fn apply(state: &mut State, command: Command) -> bool {
                 false
             }
         },
+        Command::Supply { volts } => {
+            state.supply_v = Some(volts);
+            true
+        }
         Command::MinerReport(miner) => {
             state.miner = miner;
             true
@@ -224,7 +249,8 @@ mod tests {
         client
             .send(Command::ProbeReading {
                 index: 1,
-                celsius: 48.5,
+                volts: Some(1.5),
+                celsius: Some(48.5),
             })
             .await
             .unwrap();
@@ -233,6 +259,7 @@ mod tests {
         let state = watcher.borrow();
         assert_eq!(state.probes[0].celsius, None);
         assert_eq!(state.probes[1].celsius, Some(48.5));
+        assert_eq!(state.probes[1].volts, Some(1.5));
     }
 
     #[tokio::test]

@@ -32,7 +32,11 @@ Unit conversion belongs to whatever renders a number for a person.
 - `state.rs` snapshot, commands, and the state task
 - `api.rs` the HTTP JSON API, a client of the state task
 - `config.rs` the TOML configuration file
-- `sim.rs` a simulated bath for running without hardware
+- `probes.rs` the thermistor reader, a source that feeds the state
+  task from the ADC every 500 ms
+- `adc.rs` the ADS1015 driver
+- `thermistor.rs` divider and Steinhart-Hart conversion
+- `sim.rs` a simulated bath, the source used with `--sim`
 - `bin/cli.rs` the command-line client, which talks to the API
   and never to the state task directly
 

@@ -26,7 +26,7 @@ test:
 # Run the daemon here with the simulated bath
 [group('dev')]
 run *args:
-    RUST_LOG=coinbath=debug COINBATH_CONFIG=coinbath.toml cargo run --locked --bin coinbath {{args}}
+    RUST_LOG=coinbath=debug cargo run --locked --bin coinbath -- --config coinbath.toml --sim {{args}}
 
 # Run the CLI here
 [group('dev')]
@@ -38,10 +38,10 @@ cli *args:
 deploy:
     rsync -a --delete --exclude target/ --exclude .git/ . {{host}}:{{remote_dir}}/
 
-# Deploy and run the daemon on the Pi in the foreground
+# Deploy and run the daemon on the Pi in the foreground, against the ADC
 [group('remote')]
 remote-run *args: deploy
-    ssh -t {{host}} "cd {{remote_dir}} && RUST_LOG=coinbath=debug cargo run --locked --bin coinbath {{args}}"
+    ssh -t {{host}} "cd {{remote_dir}} && RUST_LOG=coinbath=debug cargo run --locked --bin coinbath -- --config coinbath.toml {{args}}"
 
 # Build on the Pi, install binary, config, and service, enable and restart
 [group('remote')]

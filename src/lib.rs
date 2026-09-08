@@ -7,7 +7,11 @@
 //! command line, reads that snapshot and sends changes through the
 //! state task's command channel.
 
+pub mod adc;
 pub mod api;
+pub mod calibration;
 pub mod config;
+pub mod probes;
 pub mod sim;
 pub mod state;
+pub mod thermistor;
