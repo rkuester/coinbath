@@ -45,6 +45,22 @@ below the setpoint and an integral of about ten minutes. Setting
 the power fraction by hand puts the state in manual mode, where
 the loop stays out of it. Automatic mode starts the loop afresh.
 
+The loop is also the fail-safe. With no bath reading, with the
+bath over `max_bath_c`, or with the miner not answering, it asks
+for nothing, in either mode. That covers start-up: the boards get
+no power until Coinbath has water temperatures in hand and the
+miner has answered. The limit lives under `[limits]` in the
+configuration. The miner client asks the miner for the current
+request as soon as it answers, before reading anything, so a
+restarted Mujina spends as little time as it can at its own
+default of full power.
+
+Chip temperatures are the miner's business. Each EmberOne caps
+its own thread as its die approaches its limit and reports the
+ceiling and the share it holds; Coinbath reads both and shows a
+miner capped by heat as such, and its request stands for when
+the chips cool.
+
 ## The miner
 
 The Mujina client polls the miner's tree at `GET /api/v0` every

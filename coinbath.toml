@@ -17,6 +17,12 @@ setpoint_c = 51.1
 # kp = 0.5
 # ki = 0.0008
 
+# Where the fail-safe steps in: above max_bath_c nothing is asked.
+# Chip temperatures are the miner's business; each board caps its
+# own thread by its die and Mujina trips the board at 85 C.
+# [limits]
+# max_bath_c = 90.0
+
 # The ADS1015 ADC and the thermistor dividers it reads.
 # i2c_bus = "/dev/i2c-1"
 # Divider supply in volts, used when vcc_channel is unset or reads

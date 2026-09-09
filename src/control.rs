@@ -5,7 +5,17 @@
 //! with anti-windup, stepped once per period. `run` reads the bath
 //! probe from the snapshot, steps the controller, and asks the
 //! state task for the share, while the state is in automatic mode.
+//!
+//! The loop is also the fail-safe. A `Fault`, which is a missing
+//! bath reading, a bath over its limit, or a miner that is not
+//! answering, asks for nothing in either mode. The boards have
+//! water plates and no fans, so power without water flowing cooks
+//! them, and the loop asks for nothing until it has water
+//! temperatures in hand. The chips' own temperatures are the
+//! miner's business: each board caps its thread by its die and
+//! reports the ceiling, which the display shows.
 
+use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -51,6 +61,59 @@ impl Default for Gains {
             ki: 0.0008,
         }
     }
+}
+
+/// Where the fail-safe steps in, from the configuration file.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Limits {
+    /// Bath temperature above which nothing is asked, in degrees
+    /// Celsius.
+    pub max_bath_c: f64,
+}
+
+impl Default for Limits {
+    /// The bath limit sits above any sous vide setpoint.
+    fn default() -> Self {
+        Self { max_bath_c: 90.0 }
+    }
+}
+
+/// A reason to ask for nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Fault {
+    /// The bath probe has no reading.
+    NoBathReading,
+    /// The bath is above its limit.
+    BathOverLimit(f64),
+    /// The miner is not answering, so its chip temperatures are
+    /// unknown; when it answers again it starts at full power
+    /// until told otherwise.
+    MinerOffline,
+}
+
+impl fmt::Display for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Fault::NoBathReading => f.write_str("no bath reading"),
+            Fault::BathOverLimit(c) => write!(f, "bath at {c:.1} C is over its limit"),
+            Fault::MinerOffline => f.write_str("miner not answering"),
+        }
+    }
+}
+
+/// The fault in a snapshot, if any.
+pub fn fault(state: &State, limits: &Limits) -> Option<Fault> {
+    let Some(bath_c) = bath_reading(state) else {
+        return Some(Fault::NoBathReading);
+    };
+    if bath_c > limits.max_bath_c {
+        return Some(Fault::BathOverLimit(bath_c));
+    }
+    if !state.miner.online {
+        return Some(Fault::MinerOffline);
+    }
+    None
 }
 
 /// A proportional-integral controller on temperature.
@@ -110,34 +173,48 @@ impl Controller {
 
 /// Runs the loop until the state task is gone.
 ///
-/// In automatic mode, every period with a bath reading ends in a
-/// request to the state task. Manual mode leaves the request to
-/// whoever set it, and the controller starts afresh when automatic
-/// mode returns.
-pub async fn run(client: Client, gains: Gains) -> Result<()> {
+/// Every period, a fault asks for nothing, in either mode. Without
+/// a fault, automatic mode asks for the controller's share, and
+/// manual mode leaves the request alone. The controller starts
+/// afresh when automatic mode returns or a fault clears. Faults
+/// are logged when they change.
+pub async fn run(client: Client, gains: Gains, limits: Limits) -> Result<()> {
     let mut controller = Controller::new(gains);
     let mut ticker = tokio::time::interval(PERIOD);
-    let mut was_auto = true;
+    let mut stepping = false;
+    let mut last_fault: Option<Fault> = None;
     loop {
         ticker.tick().await;
         let state = client.state();
-        if state.mode != Mode::Auto {
-            was_auto = false;
-            continue;
+
+        let fault = fault(&state, &limits);
+        if fault != last_fault {
+            match fault {
+                Some(f) => tracing::warn!("asking for nothing: {f}"),
+                None => tracing::info!("fault cleared"),
+            }
+            last_fault = fault;
         }
-        if !was_auto {
-            controller.reset();
-            was_auto = true;
-        }
-        let Some(bath_c) = bath_reading(&state) else {
-            continue;
+
+        let request = if fault.is_some() {
+            stepping = false;
+            Some(0.0)
+        } else if state.mode == Mode::Auto {
+            if !stepping {
+                controller.reset();
+                stepping = true;
+            }
+            let dt = PERIOD.as_secs_f64();
+            let bath_c = bath_reading(&state).expect("a bath reading, or it is a fault");
+            let bath_c = controller.filter(bath_c, dt);
+            Some(controller.step(state.setpoint_c, bath_c, dt))
+        } else {
+            stepping = false;
+            None
         };
-        let dt = PERIOD.as_secs_f64();
-        let bath_c = controller.filter(bath_c, dt);
-        let fraction = controller.step(state.setpoint_c, bath_c, dt);
         // A small change is not worth a frequency re-plan, except at
         // the ends of the range, which the miner treats as states.
-        let worth_sending = match state.power_fraction {
+        let worth_sending = |fraction: f64| match state.power_fraction {
             Some(last) => {
                 (fraction - last).abs() >= REQUEST_DEADBAND
                     || (fraction == 0.0 && last != 0.0)
@@ -145,7 +222,9 @@ pub async fn run(client: Client, gains: Gains) -> Result<()> {
             }
             None => true,
         };
-        if worth_sending {
+        if let Some(fraction) = request
+            && worth_sending(fraction)
+        {
             client
                 .set_power_fraction(fraction)
                 .await
@@ -179,6 +258,22 @@ mod tests {
         let mut c = Controller::new(Gains { kp: 0.5, ki: 0.0 });
         assert!((c.step(50.0, 49.0, 2.0) - 0.5).abs() < 1e-9);
         assert!((c.step(50.0, 49.5, 2.0) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_fault_is_a_missing_bath_reading_a_hot_bath_or_a_silent_miner() {
+        let limits = Limits::default();
+        let mut state = State::new(50.0, &["inlet", "bath"]);
+        assert_eq!(fault(&state, &limits), Some(Fault::NoBathReading));
+
+        state.probes[1].celsius = Some(40.0);
+        assert_eq!(fault(&state, &limits), Some(Fault::MinerOffline));
+
+        state.miner.online = true;
+        assert_eq!(fault(&state, &limits), None);
+
+        state.probes[1].celsius = Some(95.0);
+        assert_eq!(fault(&state, &limits), Some(Fault::BathOverLimit(95.0)));
     }
 
     #[test]
@@ -245,36 +340,85 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn asks_only_in_auto_mode() {
-        use crate::state::{self, Command};
+    use crate::state::{self, Command, Miner};
 
-        let (client, _task) = state::spawn(State::new(50.0, &["bath"]));
-        let _loop = tokio::spawn(run(client.clone(), Gains::default()));
+    /// Waits until the request is `fraction`.
+    async fn request_becomes(client: &Client, fraction: f64) {
         let mut watcher = client.watch();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if watcher.borrow_and_update().power_fraction == Some(fraction) {
+                    return;
+                }
+                watcher.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "request {:?} never became {fraction}",
+                client.state().power_fraction
+            )
+        });
+    }
 
+    async fn bath_reads(client: &Client, celsius: f64) {
         client
             .send(Command::ProbeReading {
                 index: 0,
                 volts: None,
-                celsius: Some(20.0),
+                celsius: Some(celsius),
             })
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                watcher.changed().await.unwrap();
-                if watcher.borrow_and_update().power_fraction == Some(1.0) {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("the loop asks for full power from cold");
+    }
 
-        client.set_mode(Mode::Manual).await.unwrap();
-        client.set_power_fraction(0.1).await.unwrap();
+    async fn miner_reports(client: &Client, online: bool, chip_c: Option<f64>) {
+        client
+            .send(Command::MinerReport(Miner {
+                online,
+                chip_temperature_c: chip_c,
+                ..Miner::default()
+            }))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn asks_for_nothing_until_the_bath_reads_and_the_miner_answers() {
+        let (client, _task) = state::spawn(State::new(50.0, &["bath"]));
+        let _loop = tokio::spawn(run(client.clone(), Gains::default(), Limits::default()));
+
+        request_becomes(&client, 0.0).await;
+        bath_reads(&client, 20.0).await;
+        tokio::time::sleep(PERIOD).await;
+        assert_eq!(
+            client.state().power_fraction,
+            Some(0.0),
+            "miner still silent"
+        );
+
+        miner_reports(&client, true, None).await;
+        request_becomes(&client, 1.0).await;
+
+        miner_reports(&client, false, None).await;
+        request_becomes(&client, 0.0).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_fault_overrides_manual_mode() {
+        let (client, _task) = state::spawn(State::new(50.0, &["bath"]));
+        let _loop = tokio::spawn(run(client.clone(), Gains::default(), Limits::default()));
+        bath_reads(&client, 20.0).await;
+        miner_reports(&client, true, None).await;
+        request_becomes(&client, 1.0).await;
+
+        client.set_power_fraction_by_hand(0.3).await.unwrap();
         tokio::time::sleep(PERIOD * 2).await;
-        assert_eq!(client.state().power_fraction, Some(0.1));
+        assert_eq!(client.state().power_fraction, Some(0.3), "manual holds");
+
+        bath_reads(&client, 95.0).await;
+        request_becomes(&client, 0.0).await;
+        assert_eq!(client.state().mode, Mode::Manual);
     }
 }

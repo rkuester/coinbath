@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::adc::Channel;
-use crate::control::Gains;
+use crate::control::{Gains, Limits};
 use crate::probes::{ProbeConfig, ProbesConfig};
 
 /// Top-level configuration, read from a TOML file.
@@ -24,6 +24,8 @@ struct File {
     mujina_url: String,
     #[serde(default)]
     control: Gains,
+    #[serde(default)]
+    limits: Limits,
     #[serde(default = "default_i2c_bus")]
     i2c_bus: String,
     #[serde(default = "default_vcc")]
@@ -45,6 +47,8 @@ pub struct Config {
     pub mujina_url: String,
     /// Control loop tuning.
     pub control: Gains,
+    /// Where the fail-safe steps in.
+    pub limits: Limits,
     /// The ADC and its thermistors.
     pub probes: ProbesConfig,
 }
@@ -86,6 +90,7 @@ impl Config {
             api_listen: file.api_listen,
             mujina_url: file.mujina_url,
             control: file.control,
+            limits: file.limits,
             probes: ProbesConfig {
                 i2c_bus: file.i2c_bus,
                 vcc: file.vcc,
@@ -148,6 +153,16 @@ mod tests {
         assert_eq!(config.control.ki, Gains::default().ki);
 
         assert!(Config::parse("setpoint_c = 51.1\n[control]\nkd = 1.0\n").is_err());
+    }
+
+    #[test]
+    fn limits_default_and_override_by_key() {
+        let config = Config::parse("setpoint_c = 51.1\n").unwrap();
+        assert_eq!(config.limits, Limits::default());
+
+        let config = Config::parse("setpoint_c = 51.1\n[limits]\nmax_bath_c = 70.0\n").unwrap();
+        assert_eq!(config.limits.max_bath_c, 70.0);
+        assert!(Config::parse("setpoint_c = 51.1\n[limits]\nchip_limit_c = 70.0\n").is_err());
     }
 
     #[test]

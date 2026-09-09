@@ -36,8 +36,10 @@ Unit conversion belongs to whatever renders a number for a person.
   task from the ADC every 500 ms
 - `adc.rs` the ADS1015 driver
 - `thermistor.rs` divider and Steinhart-Hart conversion
-- `control.rs` the control loop, a client that asks for a share of
-  full power from the bath's error every 2 s in automatic mode
+- `control.rs` the control loop and the fail-safe, a client that
+  asks for a share of full power from the bath's error every 2 s in
+  automatic mode and for nothing on a fault; chip temperatures are
+  the miner's business, and each board caps its own thread
 - `mujina.rs` the Mujina client, a source that polls the miner's
   tree every 2 s and writes the requested power fraction to it
 - `sim.rs` a simulated bath and a simulated miner, the sources

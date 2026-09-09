@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     } else {
         tokio::spawn(mujina::run(client.clone(), config.mujina_url.clone()))
     };
-    let mut control = tokio::spawn(control::run(client.clone(), config.control));
+    let mut control = tokio::spawn(control::run(client.clone(), config.control, config.limits));
     let mut api = tokio::spawn(api::serve(client.clone(), config.api_listen));
     let logger = tokio::spawn(log_changes(client.clone()));
 
