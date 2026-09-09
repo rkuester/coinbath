@@ -19,7 +19,7 @@ command channel.
 just checks           # fmt, clippy, tests
 just run              # the daemon here, simulated bath and miner
 just run --sim=bath   # simulated bath, the Mujina on this machine
-just install          # build on the Pi, install, and start the service
+just install          # build in release and install the service here
 ```
 
 The daemon reads `/etc/coinbath.toml`, or the file named by

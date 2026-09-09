@@ -1,6 +1,3 @@
-host := "coinbath"
-remote_dir := "~/mujina/coinbath"
-
 _default:
     @just --list --unsorted
 
@@ -33,48 +30,35 @@ run *args:
 cli *args:
     cargo run -q --locked --bin coinbath-cli -- {{args}}
 
-# Sync coinbath source to the Pi
-[group('remote')]
-deploy: deploy-deps
-    rsync -a --delete --exclude target/ --exclude .git/ . {{host}}:{{remote_dir}}/
+# Build in release, install binaries, config, and service here, restart
+[group('service')]
+install:
+    cargo build --locked --release
+    sudo install -m 755 target/release/coinbath target/release/coinbath-cli /usr/local/bin/
+    test -f /etc/coinbath.toml || sudo install -m 644 coinbath.toml /etc/coinbath.toml
+    sudo install -m 644 systemd/coinbath.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable coinbath
+    sudo systemctl restart coinbath
 
-# Sync the sparklines crate, a path dependency, to the Pi
-[group('remote')]
-deploy-deps:
-    rsync -a --delete --exclude target/ --exclude .git/ ../../sparklines/ {{host}}:sparklines/
-
-# Deploy and run the daemon on the Pi in the foreground, against the ADC
-[group('remote')]
-remote-run *args: deploy
-    ssh -t {{host}} "cd {{remote_dir}} && RUST_LOG=coinbath=debug cargo run --locked --bin coinbath -- --config coinbath.toml {{args}}"
-
-# Build on the Pi, install binary, config, and service, enable and restart
-[group('remote')]
-install: deploy
-    ssh {{host}} "cd {{remote_dir}} && cargo build --locked --release"
-    ssh {{host}} "sudo install -m 755 {{remote_dir}}/target/release/coinbath {{remote_dir}}/target/release/coinbath-cli /usr/local/bin/"
-    ssh {{host}} "test -f /etc/coinbath.toml || sudo install -m 644 {{remote_dir}}/coinbath.toml /etc/coinbath.toml"
-    ssh {{host}} "sudo install -m 644 {{remote_dir}}/systemd/coinbath.service /etc/systemd/system/"
-    ssh {{host}} "sudo systemctl daemon-reload && sudo systemctl enable coinbath && sudo systemctl restart coinbath"
-
-# Stop, disable, and remove the service and binaries
-[group('remote')]
+# Stop, disable, and remove the service and the binaries
+[group('service')]
 uninstall:
-    ssh {{host}} "sudo systemctl disable --now coinbath || true"
-    ssh {{host}} "sudo rm -f /etc/systemd/system/coinbath.service /usr/local/bin/coinbath /usr/local/bin/coinbath-cli"
-    ssh {{host}} "sudo systemctl daemon-reload"
+    sudo systemctl disable --now coinbath || true
+    sudo rm -f /etc/systemd/system/coinbath.service /usr/local/bin/coinbath /usr/local/bin/coinbath-cli
+    sudo systemctl daemon-reload
 
-# Restart the coinbath service
-[group('remote')]
+# Restart the service
+[group('service')]
 restart:
-    ssh {{host}} "sudo systemctl restart coinbath"
+    sudo systemctl restart coinbath
 
-# Show service status
-[group('remote')]
+# Show the service status
+[group('service')]
 status:
-    ssh {{host}} "systemctl status coinbath"
+    systemctl status coinbath
 
 # Follow the service journal
-[group('remote')]
+[group('service')]
 logs:
-    ssh {{host}} "journalctl -u coinbath -f"
+    journalctl -u coinbath -f

@@ -63,8 +63,7 @@ where it agrees with the shape above.
 To look at the display without a panel, run the daemon with
 `--display shot.png` and open the file; `--page boards` starts on
 the second page. The sparklines crate is a path dependency at
-`../../sparklines`, which is `~/sparklines` here and on the Pi;
-`just deploy-deps` syncs it.
+`../../sparklines`, which is `~/sparklines` here and on the Pi.
 
 ## Build and run
 
@@ -72,10 +71,12 @@ the second page. The sparklines crate is a path dependency at
 just checks       # fmt --check, clippy -D warnings, tests
 just run          # the daemon here, simulated bath, debug logs
 just cli status   # the CLI against the daemon running here
-just install      # build on the Pi and restart the service
-just logs         # follow the service journal on the Pi
+just install      # build in release and install the service here
+just logs         # follow the service journal here
 ```
 
+Every recipe runs on the machine it is run on. Getting the tree
+onto the Pi is not the project's business and has no recipe here.
 The Pi is `coinbath` on Tailscale. Always ask before running
 anything on the Pi. The rig boards have water plates and no fans,
 so they must not hash without water flowing.
