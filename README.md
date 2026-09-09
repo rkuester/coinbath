@@ -110,6 +110,30 @@ coinbath-cli power 0.25      # a share of full power, by hand
 coinbath-cli mode auto       # back to the control loop
 ```
 
+## The display
+
+The display draws two pages on the framebuffer. The main page
+shows the setpoint in Fahrenheit with a button either side that
+moves it one degree, the bath, inlet, and outlet temperatures
+with ten minutes of sparklines, the bath's setpoint as a
+reference line, the hash rate, the power, and a bar of the share
+the miner holds against the share asked. The header names the
+mode and any fault, and a button flips to the boards page, one
+row per board with its chip, board, and regulator temperatures,
+rail voltages, current, power, and hash rate.
+
+The layout is designed for the 10-inch bar panel at 1424 by 280
+and scales with the frame's height. The framebuffer's size and
+pixel format are read from sysfs. Taps come from the panel over
+evdev, found by its name; without a panel the display still
+draws, and the API still takes the setpoint.
+
+```bash
+coinbath --display /dev/fb0       # the default without --sim
+coinbath --sim --display shot.png # a PNG rewritten every frame
+coinbath --sim --display none --geometry 1280x400
+```
+
 ## Hardware
 
 - Raspberry Pi 5, shared with mujina-minerd

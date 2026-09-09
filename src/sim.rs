@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::state::{Client, Command, Miner};
+use crate::state::{Board, Client, Command, Miner};
 
 /// Room temperature the bath cools toward, in degrees Celsius.
 const AMBIENT_C: f64 = 22.0;
@@ -25,12 +25,14 @@ const FULL_HASHRATE_HS: f64 = 30.0e12;
 /// How far the chip runs above the water at full power. The rig
 /// measured about 40 C at 150 W.
 const CHIP_RISE_C: f64 = 40.0;
-/// Where the simulated board caps its thread, as an EmberOne does:
+/// Where a simulated board caps its thread, as an EmberOne does:
 /// full at the limit minus the band, nothing at the limit.
 const CHIP_LIMIT_C: f64 = 75.0;
 const CHIP_BAND_C: f64 = 10.0;
 /// How often the simulator reports.
 const TICK: Duration = Duration::from_secs(1);
+/// The boards the simulated miner reports, sharing its output.
+const BOARDS: [&str; 2] = ["emberone-00-sim00001", "emberone-00-sim00002"];
 
 /// A first-order model of water heated by a miner.
 #[derive(Debug, Clone)]
@@ -101,27 +103,56 @@ pub async fn run_bath(client: Client) -> Result<()> {
 ///
 /// It holds whatever share of full power the state asks for, and
 /// full power until something asks, as Mujina does, less whatever
-/// its chip temperature caps it to. The chip follows the power at
-/// once, so the cap settles within a tick.
+/// each board's chip temperature caps it to. The chip follows the
+/// power at once, so the cap settles within a tick.
 pub async fn run_miner(client: Client) -> Result<()> {
     let mut ticker = tokio::time::interval(TICK);
-    let mut held = 1.0_f64;
+    let mut held = vec![1.0; BOARDS.len()];
     loop {
         ticker.tick().await;
         let state = client.state();
         let asked = state.power_fraction.unwrap_or(1.0);
         let water_c = state.probes[0].celsius.unwrap_or(AMBIENT_C);
-        let chip_c = water_c + CHIP_RISE_C * held;
-        let ceiling = ((CHIP_LIMIT_C - chip_c) / CHIP_BAND_C).clamp(0.0, 1.0);
-        held = asked.min(ceiling);
+        let share = 1.0 / BOARDS.len() as f64;
+        let boards: Vec<Board> = BOARDS
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let chip_c = water_c + CHIP_RISE_C * held[i] + i as f64;
+                let ceiling = ((CHIP_LIMIT_C - chip_c) / CHIP_BAND_C).clamp(0.0, 1.0);
+                held[i] = asked.min(ceiling);
+                let fraction = held[i];
+                Board {
+                    name: name.to_string(),
+                    hashrate_hs: Some(FULL_HASHRATE_HS * fraction * share),
+                    chip_temperature_c: Some(chip_c),
+                    voltage_v: Some(1.0 + 0.25 * fraction),
+                    current_a: Some(FULL_POWER_W * fraction * share / 1.2),
+                    power_w: Some(FULL_POWER_W * fraction * share),
+                    input_voltage_v: Some(12.1),
+                    regulator_temperature_c: Some(water_c + 12.0 * fraction),
+                    board_temperature_c: Some(water_c + 5.0 * fraction),
+                    power_fraction: Some(fraction),
+                    power_ceiling: Some(ceiling),
+                }
+            })
+            .collect();
+        let mean = held.iter().sum::<f64>() / held.len() as f64;
         client
             .send(Command::MinerReport(Miner {
                 online: true,
-                hashrate_hs: Some(FULL_HASHRATE_HS * held),
-                power_w: Some(FULL_POWER_W * held),
-                chip_temperature_c: Some(chip_c),
-                power_fraction: Some(held),
-                power_ceiling: Some(ceiling),
+                hashrate_hs: Some(FULL_HASHRATE_HS * mean),
+                power_w: Some(FULL_POWER_W * mean),
+                chip_temperature_c: boards
+                    .iter()
+                    .filter_map(|b| b.chip_temperature_c)
+                    .fold(None, |m: Option<f64>, c| Some(m.map_or(c, |m| m.max(c)))),
+                power_fraction: Some(mean),
+                power_ceiling: boards
+                    .iter()
+                    .filter_map(|b| b.power_ceiling)
+                    .reduce(f64::min),
+                boards,
             }))
             .await?;
     }

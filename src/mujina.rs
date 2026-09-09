@@ -3,9 +3,8 @@
 //!
 //! Every poll reads the whole tree at `GET /api/v0` and reports what
 //! Coinbath cares about: the hash rate summed over threads, the
-//! power summed over regulators, the hottest chip, the share of
-//! full power the threads hold, and the lowest ceiling a board puts
-//! on its thread. Whenever the state's requested share
+//! power summed over regulators, the hottest chip, and the share of
+//! full power the miner holds. Whenever the state's requested share
 //! differs from what the miner was last told, the client writes it
 //! to `PUT /api/v0/target_power_fraction`, and it writes it again
 //! after the miner comes back from an outage, since a restarted
@@ -17,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::task;
 
-use crate::state::{Client, Command, Miner};
+use crate::state::{Board, Client, Command, Miner};
 
 /// Where the miner's API is by default. Mujina binds to loopback
 /// on port 7785 unless told otherwise.
@@ -94,30 +93,24 @@ pub async fn run(client: Client, url: String) -> Result<()> {
 /// Hash rate is the sum over every thread of every board. Power is
 /// the sum over every regulator that reports it. The chip
 /// temperature is the hottest a board reports, under whichever name
-/// the board uses for it. The share held is the mean over the
-/// threads that report one, else what the miner was asked; the
-/// ceiling is the lowest any thread reports. A reading is None
-/// when no board reports one.
+/// the board uses for it. A reading is None when no board reports
+/// one. Each board is kept as well, in the miner's order, for the
+/// detail screen.
 pub fn summarize(tree: &Value) -> Miner {
     let mut hashrate = Sum::default();
     let mut power = Sum::default();
     let mut chip = Max::default();
     let mut held = Mean::default();
     let mut ceiling = Min::default();
-    for board in objects(tree.get("boards")) {
-        for thread in objects(board.get("threads")) {
-            hashrate.add(number(thread, "hashes_per_s"));
-            held.add(number(thread, "power_fraction"));
-            ceiling.add(number(thread, "power_ceiling"));
-        }
-        for regulator in objects(board.get("regulators")) {
-            power.add(number(regulator, "power_w"));
-        }
-        for (name, value) in board.as_object().into_iter().flatten() {
-            if is_chip_temperature(name) {
-                chip.add(value.as_f64());
-            }
-        }
+    let mut boards = Vec::new();
+    for (name, node) in entries(tree.get("boards")) {
+        let board = summarize_board(name, node);
+        hashrate.add(board.hashrate_hs);
+        power.add(board.power_w);
+        chip.add(board.chip_temperature_c);
+        held.add(board.power_fraction);
+        ceiling.add(board.power_ceiling);
+        boards.push(board);
     }
     let asked = tree.get("target_power_fraction").and_then(Value::as_f64);
     Miner {
@@ -127,6 +120,48 @@ pub fn summarize(tree: &Value) -> Miner {
         chip_temperature_c: chip.max(),
         power_fraction: held.mean().or(asked),
         power_ceiling: ceiling.min(),
+        boards,
+    }
+}
+
+/// Reduces one board's subtree. The core rail is the regulator
+/// named `core`; power is summed over every regulator all the same.
+fn summarize_board(name: &str, node: &Value) -> Board {
+    let mut hashrate = Sum::default();
+    let mut held = Mean::default();
+    let mut ceiling = Min::default();
+    for thread in objects(node.get("threads")) {
+        hashrate.add(number(thread, "hashes_per_s"));
+        held.add(number(thread, "power_fraction"));
+        ceiling.add(number(thread, "power_ceiling"));
+    }
+    let mut power = Sum::default();
+    for regulator in objects(node.get("regulators")) {
+        power.add(number(regulator, "power_w"));
+    }
+    let mut chip = Max::default();
+    let mut board_sensor = Max::default();
+    for (key, value) in node.as_object().into_iter().flatten() {
+        if is_chip_temperature(key) {
+            chip.add(value.as_f64());
+        } else if key.ends_with("_temperature_c") {
+            board_sensor.add(value.as_f64());
+        }
+    }
+    let core = node.get("regulators").and_then(|r| r.get("core"));
+    let core_number = |key| core.and_then(|c| number(c, key));
+    Board {
+        name: name.to_string(),
+        hashrate_hs: hashrate.total(),
+        chip_temperature_c: chip.max(),
+        voltage_v: core_number("voltage_v"),
+        current_a: core_number("current_a"),
+        power_w: power.total(),
+        input_voltage_v: core_number("input_voltage_v"),
+        regulator_temperature_c: core_number("temperature_c"),
+        board_temperature_c: board_sensor.max(),
+        power_fraction: held.mean(),
+        power_ceiling: ceiling.min(),
     }
 }
 
@@ -134,6 +169,14 @@ pub fn summarize(tree: &Value) -> Miner {
 /// `asic_temperature_c`. Both are the die.
 fn is_chip_temperature(name: &str) -> bool {
     name.ends_with("_temperature_c") && (name.starts_with("chip_") || name.starts_with("asic_"))
+}
+
+/// The entries of a JSON object, or nothing for anything else.
+fn entries(value: Option<&Value>) -> impl Iterator<Item = (&str, &Value)> {
+    value
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|map| map.iter().map(|(k, v)| (k.as_str(), v)))
 }
 
 /// The values of a JSON object, or nothing for anything else.
@@ -293,8 +336,12 @@ mod tests {
                     "model": "emberOne/00",
                     "status": "present",
                     "pcb_left_temperature_c": 41.0,
+                    "pcb_right_temperature_c": 43.5,
                     "chip_0_temperature_c": 62.5,
-                    "regulators": {"core": {"voltage_v": 1.2, "power_w": 27.0}},
+                    "regulators": {"core": {
+                        "voltage_v": 1.2, "current_a": 22.5, "power_w": 27.0,
+                        "input_voltage_v": 12.1, "temperature_c": 55.0
+                    }},
                     "threads": {"0": {
                         "hashes_per_s": 4.0e12, "status": "present",
                         "power_fraction": 0.5, "power_ceiling": 1.0
@@ -335,6 +382,27 @@ mod tests {
             "the mean of what the threads hold"
         );
         assert_eq!(miner.power_ceiling, Some(0.3), "the hot board's ceiling");
+
+        let names: Vec<&str> = miner.boards.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "cpu-miner-0",
+                "emberone-00-2d714701",
+                "emberone-00-328679e0"
+            ]
+        );
+        let first = &miner.boards[1];
+        assert_eq!(first.hashrate_hs, Some(4.0e12));
+        assert_eq!(first.voltage_v, Some(1.2));
+        assert_eq!(first.current_a, Some(22.5));
+        assert_eq!(first.input_voltage_v, Some(12.1));
+        assert_eq!(first.regulator_temperature_c, Some(55.0));
+        assert_eq!(first.board_temperature_c, Some(43.5));
+        assert_eq!(first.power_fraction, Some(0.5));
+        assert_eq!(miner.boards[2].power_ceiling, Some(0.3));
+        assert_eq!(miner.boards[0].chip_temperature_c, None);
+        assert_eq!(miner.boards[0].power_fraction, None);
     }
 
     #[test]

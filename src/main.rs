@@ -7,8 +7,10 @@ use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
 use coinbath::config::Config;
+use coinbath::display::{Output, Size};
+use coinbath::screen::Page;
 use coinbath::state::{self, Client, State};
-use coinbath::{api, control, mujina, probes, sim};
+use coinbath::{api, control, mujina, probes, sim, ui};
 
 /// The coinbath daemon.
 #[derive(Parser)]
@@ -22,6 +24,35 @@ struct Args {
     /// miner, or the bath alone against a real Mujina.
     #[arg(long, value_name = "WHAT", num_args = 0..=1, default_missing_value = "all")]
     sim: Option<Sim>,
+
+    /// Where the display draws: a framebuffer device, a .png file
+    /// rewritten with every frame, or none. Defaults to /dev/fb0,
+    /// or to none with --sim.
+    #[arg(long, value_name = "WHERE")]
+    display: Option<Output>,
+
+    /// Frame size when the display is a file or none.
+    #[arg(long, value_name = "WxH", default_value = "1424x280")]
+    geometry: Size,
+
+    /// The page the display starts on.
+    #[arg(long, value_enum, default_value_t = PageArg::Main)]
+    page: PageArg,
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum PageArg {
+    Main,
+    Boards,
+}
+
+impl From<PageArg> for Page {
+    fn from(page: PageArg) -> Self {
+        match page {
+            PageArg::Main => Page::Main,
+            PageArg::Boards => Page::Boards,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
@@ -42,6 +73,11 @@ async fn main() -> Result<()> {
     let config = Config::load(&args.config)?;
     let sim_bath = args.sim.is_some();
     let sim_miner = args.sim == Some(Sim::All);
+    let output = args.display.unwrap_or(if sim_bath {
+        Output::None
+    } else {
+        Output::Framebuffer(PathBuf::from("/dev/fb0"))
+    });
     tracing::info!(
         setpoint_c = config.setpoint_c,
         api_listen = %config.api_listen,
@@ -49,6 +85,7 @@ async fn main() -> Result<()> {
         probes = config.probes.probes.len(),
         sim_bath,
         sim_miner,
+        display = ?output,
         "loaded {}",
         args.config.display()
     );
@@ -73,6 +110,13 @@ async fn main() -> Result<()> {
     };
     let mut control = tokio::spawn(control::run(client.clone(), config.control, config.limits));
     let mut api = tokio::spawn(api::serve(client.clone(), config.api_listen));
+    let mut display = tokio::spawn(ui::run(
+        client.clone(),
+        output,
+        args.geometry,
+        config.limits,
+        args.page.into(),
+    ));
     let logger = tokio::spawn(log_changes(client.clone()));
 
     // The sources and the API run until shutdown; any one ending
@@ -83,6 +127,7 @@ async fn main() -> Result<()> {
         r = &mut miner => Err(stopped_early("miner client", r)),
         r = &mut control => Err(stopped_early("control loop", r)),
         r = &mut api => Err(stopped_early("API", r)),
+        r = &mut display => Err(stopped_early("display", r)),
     };
     tracing::info!("shutting down");
 
@@ -90,6 +135,7 @@ async fn main() -> Result<()> {
     miner.abort();
     control.abort();
     api.abort();
+    display.abort();
     logger.abort();
     drop(client);
     state_task.await.context("state task panicked")?;

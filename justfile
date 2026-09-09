@@ -35,8 +35,13 @@ cli *args:
 
 # Sync coinbath source to the Pi
 [group('remote')]
-deploy:
+deploy: deploy-deps
     rsync -a --delete --exclude target/ --exclude .git/ . {{host}}:{{remote_dir}}/
+
+# Sync the sparklines crate, a path dependency, to the Pi
+[group('remote')]
+deploy-deps:
+    rsync -a --delete --exclude target/ --exclude .git/ ../../sparklines/ {{host}}:sparklines/
 
 # Deploy and run the daemon on the Pi in the foreground, against the ADC
 [group('remote')]

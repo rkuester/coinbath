@@ -44,11 +44,27 @@ Unit conversion belongs to whatever renders a number for a person.
   tree every 2 s and writes the requested power fraction to it
 - `sim.rs` a simulated bath and a simulated miner, the sources
   used with `--sim`; `--sim=bath` keeps the real Mujina client
+- `ui.rs` the display, a client that redraws the page twice a
+  second and turns taps into commands
+- `screen.rs` the two pages, drawn from a snapshot at 1424 by 280
+  and scaled to the frame; returns the buttons on the page
+- `display.rs` where a frame goes: the framebuffer, sized and
+  formatted from sysfs, a PNG file, or nowhere
+- `touch.rs` taps from the panel over evdev, found by name
+- `history.rs` the ring buffers behind the sparklines
+- `text.rs` and `image.rs` fonts and the badger, embedded from
+  `assets/`
 - `bin/cli.rs` the command-line client, which talks to the API
   and never to the state task directly
 
 `../coinbath-v1/` is the previous version. Borrow from it only
 where it agrees with the shape above.
+
+To look at the display without a panel, run the daemon with
+`--display shot.png` and open the file; `--page boards` starts on
+the second page. The sparklines crate is a path dependency at
+`../../sparklines`, which is `~/sparklines` here and on the Pi;
+`just deploy-deps` syncs it.
 
 ## Build and run
 

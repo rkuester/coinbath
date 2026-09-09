@@ -25,6 +25,33 @@ pub struct Probe {
     pub volts: Option<f64>,
 }
 
+/// One hash board, as the miner reports it. Every reading is None
+/// when the board does not report it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Board {
+    /// The miner's key for the board, its model and serial.
+    pub name: String,
+    /// Hash rate in hashes per second, summed over its threads.
+    pub hashrate_hs: Option<f64>,
+    /// The hottest chip on the board, in degrees Celsius.
+    pub chip_temperature_c: Option<f64>,
+    /// The core rail's output.
+    pub voltage_v: Option<f64>,
+    pub current_a: Option<f64>,
+    pub power_w: Option<f64>,
+    /// The core rail's input.
+    pub input_voltage_v: Option<f64>,
+    /// The core regulator's own temperature, in degrees Celsius.
+    pub regulator_temperature_c: Option<f64>,
+    /// The hottest board sensor, in degrees Celsius.
+    pub board_temperature_c: Option<f64>,
+    /// The share of full power the board's thread holds, and the
+    /// most the board lets it hold. A ceiling under 1.0 means the
+    /// board is throttling its thread by heat.
+    pub power_fraction: Option<f64>,
+    pub power_ceiling: Option<f64>,
+}
+
 /// What the miner reports, as far as Coinbath cares. Every reading
 /// is None until the miner reports it, and None again when it
 /// stops.
@@ -46,6 +73,8 @@ pub struct Miner {
     /// The lowest ceiling any thread reports, 0.0 to 1.0. Under
     /// 1.0 a board is throttling its thread by heat.
     pub power_ceiling: Option<f64>,
+    /// Every board, in the miner's order.
+    pub boards: Vec<Board>,
 }
 
 /// Who decides the share of full power to ask for.

@@ -13,7 +13,7 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=coinbath
 DynamicUser=yes
-SupplementaryGroups=video i2c
+SupplementaryGroups=video i2c input
 
 [Install]
 WantedBy=multi-user.target
