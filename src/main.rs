@@ -2,25 +2,34 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
 use coinbath::config::Config;
 use coinbath::state::{self, Client, State};
-use coinbath::{api, probes, sim};
+use coinbath::{api, mujina, probes, sim};
 
 /// The coinbath daemon.
 #[derive(Parser)]
-#[command(name = "coinbath")]
+#[command(name = "coinbath", args_override_self = true)]
 struct Args {
     /// Configuration file.
     #[arg(long, env = "COINBATH_CONFIG", default_value = "/etc/coinbath.toml")]
     config: PathBuf,
 
-    /// Feed the state from a simulated bath instead of the ADC.
-    #[arg(long)]
-    sim: bool,
+    /// Simulate hardware instead of using it: the bath and the
+    /// miner, or the bath alone against a real Mujina.
+    #[arg(long, value_name = "WHAT", num_args = 0..=1, default_missing_value = "all")]
+    sim: Option<Sim>,
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum Sim {
+    /// A simulated bath heated by a simulated miner.
+    All,
+    /// A simulated bath heated by the miner Mujina reports.
+    Bath,
 }
 
 #[tokio::main]
@@ -31,16 +40,20 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let config = Config::load(&args.config)?;
+    let sim_bath = args.sim.is_some();
+    let sim_miner = args.sim == Some(Sim::All);
     tracing::info!(
         setpoint_c = config.setpoint_c,
         api_listen = %config.api_listen,
+        mujina_url = %config.mujina_url,
         probes = config.probes.probes.len(),
-        sim = args.sim,
+        sim_bath,
+        sim_miner,
         "loaded {}",
         args.config.display()
     );
 
-    let probe_names: Vec<&str> = if args.sim {
+    let probe_names: Vec<&str> = if sim_bath {
         sim::PROBE_NAMES.to_vec()
     } else {
         config.probes.validate().context("probes")?;
@@ -48,24 +61,31 @@ async fn main() -> Result<()> {
     };
     let (client, state_task) = state::spawn(State::new(config.setpoint_c, &probe_names));
 
-    let mut source = if args.sim {
-        tokio::spawn(sim::run(client.clone()))
+    let mut probes = if sim_bath {
+        tokio::spawn(sim::run_bath(client.clone()))
     } else {
         tokio::spawn(probes::run(client.clone(), config.probes.clone()))
+    };
+    let mut miner = if sim_miner {
+        tokio::spawn(sim::run_miner(client.clone()))
+    } else {
+        tokio::spawn(mujina::run(client.clone(), config.mujina_url.clone()))
     };
     let mut api = tokio::spawn(api::serve(client.clone(), config.api_listen));
     let logger = tokio::spawn(log_changes(client.clone()));
 
-    // The source and the API run until shutdown; either one ending
+    // The sources and the API run until shutdown; any one ending
     // early is a failure the operator must see.
     let outcome = tokio::select! {
         r = wait_for_shutdown() => r,
-        r = &mut source => Err(stopped_early("source", r)),
+        r = &mut probes => Err(stopped_early("probes", r)),
+        r = &mut miner => Err(stopped_early("miner client", r)),
         r = &mut api => Err(stopped_early("API", r)),
     };
     tracing::info!("shutting down");
 
-    source.abort();
+    probes.abort();
+    miner.abort();
     api.abort();
     logger.abort();
     drop(client);
@@ -99,7 +119,10 @@ async fn log_changes(client: Client) {
         tracing::debug!(
             setpoint_c = state.setpoint_c,
             probes = probes.join(" "),
-            power_fraction = state.miner.power_fraction,
+            power_fraction = state.power_fraction,
+            miner_online = state.miner.online,
+            miner_power_w = state.miner.power_w,
+            miner_power_fraction = state.miner.power_fraction,
             "state"
         );
     }

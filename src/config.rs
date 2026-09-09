@@ -19,6 +19,8 @@ struct File {
     setpoint_c: f64,
     #[serde(default = "default_api_listen")]
     api_listen: SocketAddr,
+    #[serde(default = "default_mujina_url")]
+    mujina_url: String,
     #[serde(default = "default_i2c_bus")]
     i2c_bus: String,
     #[serde(default = "default_vcc")]
@@ -36,6 +38,8 @@ pub struct Config {
     pub setpoint_c: f64,
     /// Address the HTTP JSON API listens on.
     pub api_listen: SocketAddr,
+    /// Base URL of the miner's REST API.
+    pub mujina_url: String,
     /// The ADC and its thermistors.
     pub probes: ProbesConfig,
 }
@@ -52,6 +56,10 @@ fn default_vcc() -> f64 {
 /// Loopback only; Mujina is on 7785 next door.
 fn default_api_listen() -> SocketAddr {
     "127.0.0.1:7786".parse().expect("literal address parses")
+}
+
+fn default_mujina_url() -> String {
+    crate::mujina::DEFAULT_URL.to_string()
 }
 
 impl Config {
@@ -71,6 +79,7 @@ impl Config {
         let config = Self {
             setpoint_c: file.setpoint_c,
             api_listen: file.api_listen,
+            mujina_url: file.mujina_url,
             probes: ProbesConfig {
                 i2c_bus: file.i2c_bus,
                 vcc: file.vcc,
@@ -111,6 +120,16 @@ mod tests {
 
         let config = Config::parse("setpoint_c = 51.1\napi_listen = \"0.0.0.0:8080\"\n").unwrap();
         assert_eq!(config.api_listen.port(), 8080);
+    }
+
+    #[test]
+    fn mujina_url_defaults_to_loopback_and_can_be_set() {
+        let config = Config::parse("setpoint_c = 51.1\n").unwrap();
+        assert_eq!(config.mujina_url, "http://127.0.0.1:7785");
+
+        let config =
+            Config::parse("setpoint_c = 51.1\nmujina_url = \"http://rig:7785\"\n").unwrap();
+        assert_eq!(config.mujina_url, "http://rig:7785");
     }
 
     #[test]

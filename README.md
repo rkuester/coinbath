@@ -16,9 +16,10 @@ command channel.
 ## Build and run
 
 ```bash
-just checks     # fmt, clippy, tests
-just run        # the daemon here, against the simulated bath
-just install    # build on the Pi, install, and start the service
+just checks           # fmt, clippy, tests
+just run              # the daemon here, simulated bath and miner
+just run --sim=bath   # simulated bath, the Mujina on this machine
+just install          # build on the Pi, install, and start the service
 ```
 
 The daemon reads `/etc/coinbath.toml`, or the file named by
@@ -26,8 +27,25 @@ The daemon reads `/etc/coinbath.toml`, or the file named by
 is the reference configuration. It names the ADC bus, the divider
 supply, and one `[[probe]]` per thermistor with its channel,
 divider resistor, Steinhart-Hart coefficients, and calibration
-offset. With `--sim` the daemon ignores the probes and runs a
-simulated bath instead.
+offset. `mujina_url` names the miner's API, loopback port 7785
+unless set. With `--sim` the daemon ignores the probes and the
+miner and runs a simulated bath heated by a simulated miner. With
+`--sim=bath` the simulated bath is heated by whatever share of
+full power the real Mujina reports, which is how the miner client
+is exercised against Mujina's CPU backend on a laptop.
+
+## The miner
+
+The Mujina client polls the miner's tree at `GET /api/v0` every
+2 s and reports the hash rate summed over threads, the power
+summed over regulators, the hottest chip, and the share of full
+power the miner holds. Coinbath asks for a share through the
+state task; the client writes it to
+`PUT /api/v0/target_power_fraction` when it changes, and writes it
+again when the miner comes back from an outage, since a restarted
+Mujina forgets. Until something asks, the miner decides for
+itself, which for Mujina is full power. A miner that stops
+answering is reported offline with no readings.
 
 ## API
 
@@ -41,17 +59,23 @@ curl http://127.0.0.1:7786/api/v0/state
 # Set the bath to 51.1 C; the reply is the snapshot after the change
 curl -X PUT -H 'content-type: application/json' -d '51.1' \
   http://127.0.0.1:7786/api/v0/setpoint
+
+# Ask the miner for a quarter of its full power
+curl -X PUT -H 'content-type: application/json' -d '0.25' \
+  http://127.0.0.1:7786/api/v0/power_fraction
 ```
 
-A setpoint outside 0 to 95 C is refused with 400 and the reason.
+A setpoint outside 0 to 95 C, or a power fraction outside 0 to 1,
+is refused with 400 and the reason.
 
-`coinbath-cli` wraps the same two calls:
+`coinbath-cli` wraps the same calls:
 
 ```bash
 coinbath-cli status          # setpoint, probes, miner, in C and F
 coinbath-cli json            # the raw snapshot
 coinbath-cli setpoint 51.1   # degrees Celsius
 coinbath-cli setpoint -f 124 # degrees Fahrenheit
+coinbath-cli power 0.25      # a share of the miner's full power
 ```
 
 ## Hardware

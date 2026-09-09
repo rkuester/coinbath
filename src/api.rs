@@ -1,8 +1,10 @@
 //! The HTTP JSON API.
 //!
 //! `GET /api/v0/state` returns the snapshot. `PUT /api/v0/setpoint`
-//! takes a bare JSON number in degrees Celsius and returns the
-//! snapshot after the change, or 400 with the reason it was refused.
+//! takes a bare JSON number in degrees Celsius, and
+//! `PUT /api/v0/power_fraction` a bare JSON number from 0.0 to 1.0.
+//! Each returns the snapshot after the change, or 400 with the
+//! reason it was refused.
 
 use std::net::SocketAddr;
 
@@ -19,6 +21,7 @@ pub fn router(client: Client) -> Router {
     Router::new()
         .route("/api/v0/state", get(get_state))
         .route("/api/v0/setpoint", put(put_setpoint))
+        .route("/api/v0/power_fraction", put(put_power_fraction))
         .with_state(client)
 }
 
@@ -41,13 +44,34 @@ async fn put_setpoint(
     Shared(client): Shared<Client>,
     Json(celsius): Json<f64>,
 ) -> Result<Json<State>, (StatusCode, String)> {
-    match client.set_setpoint(celsius).await {
+    reply(&client, "setpoint", client.set_setpoint(celsius).await)
+}
+
+async fn put_power_fraction(
+    Shared(client): Shared<Client>,
+    Json(fraction): Json<f64>,
+) -> Result<Json<State>, (StatusCode, String)> {
+    reply(
+        &client,
+        "power fraction",
+        client.set_power_fraction(fraction).await,
+    )
+}
+
+/// Answers a change with the snapshot after it, or with the reason
+/// the state task refused it.
+fn reply(
+    client: &Client,
+    what: &str,
+    result: Result<()>,
+) -> Result<Json<State>, (StatusCode, String)> {
+    match result {
         Ok(()) => Ok(Json(client.state())),
         Err(e) if e.downcast_ref::<Rejected>().is_some() => {
             Err((StatusCode::BAD_REQUEST, e.to_string()))
         }
         Err(e) => {
-            tracing::error!("setpoint change failed: {e:#}");
+            tracing::error!("{what} change failed: {e:#}");
             Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     }
@@ -86,10 +110,11 @@ mod tests {
     }
 
     fn put_setpoint(base: &str, celsius: f64) -> (u16, String) {
-        let mut response = agent()
-            .put(format!("{base}/api/v0/setpoint"))
-            .send_json(celsius)
-            .unwrap();
+        put_number(&format!("{base}/api/v0/setpoint"), celsius)
+    }
+
+    fn put_number(url: &str, value: f64) -> (u16, String) {
+        let mut response = agent().put(url).send_json(value).unwrap();
         let status = response.status().as_u16();
         let body = response.body_mut().read_to_string().unwrap();
         (status, body)
@@ -119,6 +144,30 @@ mod tests {
         let after: State = serde_json::from_str(&body).unwrap();
         assert_eq!(after.setpoint_c, 60.0);
         assert_eq!(client.state().setpoint_c, 60.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn power_fraction_is_set_and_refused_the_same_way() {
+        let (client, _task) = state::spawn(State::new(50.0, &["bath"]));
+        let base = serve_ephemeral(client.clone()).await;
+        let url = format!("{base}/api/v0/power_fraction");
+
+        let (status, body) = tokio::task::spawn_blocking({
+            let url = url.clone();
+            move || put_number(&url, 0.3)
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 200);
+        let after: State = serde_json::from_str(&body).unwrap();
+        assert_eq!(after.power_fraction, Some(0.3));
+
+        let (status, body) = tokio::task::spawn_blocking(move || put_number(&url, 2.0))
+            .await
+            .unwrap();
+        assert_eq!(status, 400);
+        assert!(body.contains("2"), "body names the value: {body}");
+        assert_eq!(client.state().power_fraction, Some(0.3));
     }
 
     #[tokio::test(flavor = "multi_thread")]

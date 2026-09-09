@@ -1,7 +1,11 @@
-//! A simulated bath, for running Coinbath without hardware.
+//! A simulated bath and a simulated miner, for running Coinbath
+//! without hardware.
 //!
-//! `Bath` is a first-order thermal model. `run` steps it on a timer
-//! and feeds the state task the readings a real rig would send.
+//! `Bath` is a first-order thermal model. `run_bath` steps it on a
+//! timer and feeds the state task the readings the probes would
+//! send, heated by whatever share of full power the miner reports.
+//! `run_miner` plays the miner: it holds whatever share the state
+//! asks for and reports the telemetry the Mujina client would.
 
 use std::time::Duration;
 
@@ -18,6 +22,13 @@ const TAU_S: f64 = 120.0;
 /// Miner output at full power.
 const FULL_POWER_W: f64 = 300.0;
 const FULL_HASHRATE_HS: f64 = 30.0e12;
+/// How far the chip runs above the water at full power. The rig
+/// measured about 40 C at 150 W.
+const CHIP_RISE_C: f64 = 40.0;
+/// Where the simulated board caps its thread, as an EmberOne does:
+/// full at the limit minus the band, nothing at the limit.
+const CHIP_LIMIT_C: f64 = 75.0;
+const CHIP_BAND_C: f64 = 10.0;
 /// How often the simulator reports.
 const TICK: Duration = Duration::from_secs(1);
 
@@ -60,16 +71,17 @@ impl Default for Bath {
 /// Probe names the simulator reports, in index order.
 pub const PROBE_NAMES: [&str; 3] = ["bath", "inlet", "outlet"];
 
-/// Runs the simulator until the state task is gone.
+/// Runs the simulated bath until the state task is gone.
 ///
-/// The miner runs at whatever power fraction the state last asked
-/// for, and at full power until something asks.
-pub async fn run(client: Client) -> Result<()> {
+/// The water is heated by the share of full power the miner
+/// reports holding, so it works against the simulated miner and
+/// against a real one alike. A miner that reports nothing is off.
+pub async fn run_bath(client: Client) -> Result<()> {
     let mut bath = Bath::new();
     let mut ticker = tokio::time::interval(TICK);
     loop {
         ticker.tick().await;
-        let power_fraction = client.state().miner.power_fraction.unwrap_or(1.0);
+        let power_fraction = client.state().miner.power_fraction.unwrap_or(0.0);
         bath.step(TICK.as_secs_f64(), power_fraction);
 
         let readings = [bath.bath_c, bath.inlet_c(), bath.outlet_c(power_fraction)];
@@ -82,11 +94,34 @@ pub async fn run(client: Client) -> Result<()> {
                 })
                 .await?;
         }
+    }
+}
+
+/// Runs the simulated miner until the state task is gone.
+///
+/// It holds whatever share of full power the state asks for, and
+/// full power until something asks, as Mujina does, less whatever
+/// its chip temperature caps it to. The chip follows the power at
+/// once, so the cap settles within a tick.
+pub async fn run_miner(client: Client) -> Result<()> {
+    let mut ticker = tokio::time::interval(TICK);
+    let mut held = 1.0_f64;
+    loop {
+        ticker.tick().await;
+        let state = client.state();
+        let asked = state.power_fraction.unwrap_or(1.0);
+        let water_c = state.probes[0].celsius.unwrap_or(AMBIENT_C);
+        let chip_c = water_c + CHIP_RISE_C * held;
+        let ceiling = ((CHIP_LIMIT_C - chip_c) / CHIP_BAND_C).clamp(0.0, 1.0);
+        held = asked.min(ceiling);
         client
             .send(Command::MinerReport(Miner {
-                hashrate_hs: Some(FULL_HASHRATE_HS * power_fraction),
-                power_w: Some(FULL_POWER_W * power_fraction),
-                power_fraction: Some(power_fraction),
+                online: true,
+                hashrate_hs: Some(FULL_HASHRATE_HS * held),
+                power_w: Some(FULL_POWER_W * held),
+                chip_temperature_c: Some(chip_c),
+                power_fraction: Some(held),
+                power_ceiling: Some(ceiling),
             }))
             .await?;
     }

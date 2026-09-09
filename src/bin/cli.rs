@@ -38,6 +38,12 @@ enum Command {
         fahrenheit: bool,
     },
 
+    /// Ask the miner for a share of its full power, 0 to 1.
+    Power {
+        /// The share of full power, from 0 (off) to 1 (full).
+        fraction: f64,
+    },
+
     /// Record a calibration point: average the probes for a while
     /// against a reference thermometer reading.
     Calibrate {
@@ -106,17 +112,12 @@ fn main() -> Result<()> {
             } else {
                 temperature
             };
-            let mut response = agent
-                .put(format!("{}/api/v0/setpoint", cli.url))
-                .send_json(celsius)
-                .context("send setpoint")?;
-            let status = response.status();
-            let body = response.body_mut().read_to_string()?;
-            if !status.is_success() {
-                bail!("{status}: {body}");
-            }
-            let state: State = serde_json::from_str(&body)?;
+            let state = put_number(&agent, &cli.url, "setpoint", celsius)?;
             println!("setpoint {}", temp(state.setpoint_c));
+        }
+        Command::Power { fraction } => {
+            let state = put_number(&agent, &cli.url, "power_fraction", fraction)?;
+            println!("power {}", share(state.power_fraction));
         }
         Command::Calibrate {
             reference,
@@ -254,6 +255,21 @@ fn calibrate(
     })
 }
 
+/// Writes a bare number to one of the API's PUT endpoints and
+/// returns the snapshot after the change.
+fn put_number(agent: &ureq::Agent, url: &str, endpoint: &str, value: f64) -> Result<State> {
+    let mut response = agent
+        .put(format!("{url}/api/v0/{endpoint}"))
+        .send_json(value)
+        .with_context(|| format!("send {endpoint}"))?;
+    let status = response.status();
+    let body = response.body_mut().read_to_string()?;
+    if !status.is_success() {
+        bail!("{status}: {body}");
+    }
+    Ok(serde_json::from_str(&body)?)
+}
+
 fn get_state(agent: &ureq::Agent, url: &str) -> Result<State> {
     agent
         .get(format!("{url}/api/v0/state"))
@@ -280,22 +296,40 @@ fn print_status(state: &State) {
         println!("{:9}{v:.3} V", "supply");
     }
     let miner = &state.miner;
+    let capped = match miner.power_ceiling {
+        Some(ceiling) if ceiling < 1.0 => format!(", capped by heat at {ceiling:.2}"),
+        _ => String::new(),
+    };
+    println!(
+        "{:9}{} asked, miner holding {}{capped}",
+        "power",
+        share(state.power_fraction),
+        share(miner.power_fraction)
+    );
+    if !miner.online {
+        println!("{:9}offline", "miner");
+        return;
+    }
     let hashrate = miner
         .hashrate_hs
         .map(|h| format!("{:.2} TH/s", h / 1e12))
-        .unwrap_or_else(|| "unknown".into());
+        .unwrap_or_else(|| "hashrate unknown".into());
     let power = miner
         .power_w
         .map(|w| format!("{w:.0} W"))
-        .unwrap_or_else(|| "unknown".into());
-    let fraction = miner
-        .power_fraction
+        .unwrap_or_else(|| "power unknown".into());
+    let chip = miner
+        .chip_temperature_c
+        .map(|c| format!("chip {c:.1} C"))
+        .unwrap_or_else(|| "chip temperature unknown".into());
+    println!("{:9}{hashrate}, {power}, {chip}", "miner");
+}
+
+/// Formats a share of full power, or its absence.
+fn share(fraction: Option<f64>) -> String {
+    fraction
         .map(|f| format!("{f:.2}"))
-        .unwrap_or_else(|| "unset".into());
-    println!(
-        "{:9}{hashrate}, {power}, power fraction {fraction}",
-        "miner"
-    );
+        .unwrap_or_else(|| "unset".into())
 }
 
 /// Formats a temperature in both units, since the bath is set in

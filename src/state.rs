@@ -25,15 +25,27 @@ pub struct Probe {
     pub volts: Option<f64>,
 }
 
-/// What the miner reports, as far as Coinbath cares.
+/// What the miner reports, as far as Coinbath cares. Every reading
+/// is None until the miner reports it, and None again when it
+/// stops.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Miner {
-    /// Hash rate in hashes per second.
+    /// Whether the last exchange with the miner succeeded.
+    pub online: bool,
+    /// Hash rate in hashes per second, summed over the miner.
     pub hashrate_hs: Option<f64>,
-    /// Power draw in watts.
+    /// Power draw in watts, summed over the boards that report it.
     pub power_w: Option<f64>,
-    /// The share of full power Coinbath last asked for, 0.0 to 1.0.
+    /// The hottest chip temperature any board reports, in degrees
+    /// Celsius.
+    pub chip_temperature_c: Option<f64>,
+    /// The share of full power the miner holds, 0.0 to 1.0: the
+    /// mean over its threads of what each holds, or what it was
+    /// asked when no thread reports.
     pub power_fraction: Option<f64>,
+    /// The lowest ceiling any thread reports, 0.0 to 1.0. Under
+    /// 1.0 a board is throttling its thread by heat.
+    pub power_ceiling: Option<f64>,
 }
 
 /// The snapshot the state task publishes.
@@ -41,6 +53,9 @@ pub struct Miner {
 pub struct State {
     /// Target bath temperature in degrees Celsius.
     pub setpoint_c: f64,
+    /// The share of full power Coinbath asks of the miner, 0.0 to
+    /// 1.0, or None while nothing has asked and the miner decides.
+    pub power_fraction: Option<f64>,
     pub probes: Vec<Probe>,
     /// The divider supply as last measured, in volts.
     pub supply_v: Option<f64>,
@@ -53,6 +68,7 @@ impl State {
     pub fn new(setpoint_c: f64, probe_names: &[&str]) -> Self {
         Self {
             setpoint_c,
+            power_fraction: None,
             probes: probe_names
                 .iter()
                 .map(|name| Probe {
@@ -85,6 +101,11 @@ pub enum Command {
     /// Sets the target bath temperature.
     SetSetpoint {
         celsius: f64,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// Sets the share of full power to ask of the miner.
+    SetPowerFraction {
+        fraction: f64,
         reply: oneshot::Sender<Result<()>>,
     },
     /// Records a probe reading, by probe index. `celsius` is None
@@ -124,6 +145,17 @@ impl Client {
     pub async fn set_setpoint(&self, celsius: f64) -> Result<()> {
         let (reply, response) = oneshot::channel();
         self.send(Command::SetSetpoint { celsius, reply }).await?;
+        response
+            .await
+            .map_err(|_| anyhow!("state task dropped the reply"))?
+    }
+
+    /// Sets the share of full power to ask of the miner and waits
+    /// for the state task to accept or reject it.
+    pub async fn set_power_fraction(&self, fraction: f64) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::SetPowerFraction { fraction, reply })
+            .await?;
         response
             .await
             .map_err(|_| anyhow!("state task dropped the reply"))?
@@ -171,6 +203,16 @@ fn apply(state: &mut State, command: Command) -> bool {
             let _ = reply.send(result);
             accepted
         }
+        Command::SetPowerFraction { fraction, reply } => {
+            let result = validate_power_fraction(fraction);
+            let accepted = result.is_ok();
+            if accepted {
+                state.power_fraction = Some(fraction);
+                tracing::info!(fraction, "power fraction changed");
+            }
+            let _ = reply.send(result);
+            accepted
+        }
         Command::ProbeReading {
             index,
             volts,
@@ -214,9 +256,49 @@ fn validate_setpoint(celsius: f64) -> Result<()> {
     }
 }
 
+/// The miner's own range: 0.0 is off and 1.0 is full power.
+const POWER_FRACTION_RANGE: std::ops::RangeInclusive<f64> = 0.0..=1.0;
+
+fn validate_power_fraction(fraction: f64) -> Result<()> {
+    if fraction.is_finite() && POWER_FRACTION_RANGE.contains(&fraction) {
+        Ok(())
+    } else {
+        Err(Rejected(format!(
+            "power fraction {fraction} is outside {}..={}",
+            POWER_FRACTION_RANGE.start(),
+            POWER_FRACTION_RANGE.end()
+        ))
+        .into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn power_fraction_starts_unset_and_changes_on_request() {
+        let (client, _task) = spawn(State::new(50.0, &["bath"]));
+        let mut watcher = client.watch();
+        assert_eq!(client.state().power_fraction, None);
+
+        client.set_power_fraction(0.25).await.unwrap();
+
+        watcher.changed().await.unwrap();
+        assert_eq!(watcher.borrow().power_fraction, Some(0.25));
+    }
+
+    #[tokio::test]
+    async fn rejected_power_fraction_leaves_state_alone() {
+        let (client, _task) = spawn(State::new(50.0, &["bath"]));
+
+        let err = client.set_power_fraction(1.5).await.unwrap_err();
+        assert!(err.downcast_ref::<Rejected>().is_some());
+        assert!(client.set_power_fraction(-0.1).await.is_err());
+        assert!(client.set_power_fraction(f64::NAN).await.is_err());
+
+        assert_eq!(client.state().power_fraction, None);
+    }
 
     #[tokio::test]
     async fn setpoint_change_reaches_every_watcher() {

@@ -6,6 +6,9 @@ setpoint_c = 51.1
 # Address the HTTP JSON API listens on. Loopback by default.
 # api_listen = "127.0.0.1:7786"
 
+# The miner's REST API. Mujina next door, by default.
+# mujina_url = "http://127.0.0.1:7785"
+
 # The ADS1015 ADC and the thermistor dividers it reads.
 # i2c_bus = "/dev/i2c-1"
 # Divider supply in volts, used when vcc_channel is unset or reads

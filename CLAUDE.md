@@ -36,7 +36,10 @@ Unit conversion belongs to whatever renders a number for a person.
   task from the ADC every 500 ms
 - `adc.rs` the ADS1015 driver
 - `thermistor.rs` divider and Steinhart-Hart conversion
-- `sim.rs` a simulated bath, the source used with `--sim`
+- `mujina.rs` the Mujina client, a source that polls the miner's
+  tree every 2 s and writes the requested power fraction to it
+- `sim.rs` a simulated bath and a simulated miner, the sources
+  used with `--sim`; `--sim=bath` keeps the real Mujina client
 - `bin/cli.rs` the command-line client, which talks to the API
   and never to the state task directly
 
