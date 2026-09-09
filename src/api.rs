@@ -2,9 +2,10 @@
 //!
 //! `GET /api/v0/state` returns the snapshot. `PUT /api/v0/setpoint`
 //! takes a bare JSON number in degrees Celsius, and
-//! `PUT /api/v0/power_fraction` a bare JSON number from 0.0 to 1.0.
-//! Each returns the snapshot after the change, or 400 with the
-//! reason it was refused.
+//! `PUT /api/v0/power_fraction` a bare JSON number from 0.0 to 1.0,
+//! which also puts the state in manual mode. `PUT /api/v0/mode`
+//! takes `"auto"` or `"manual"`. Each returns the snapshot after
+//! the change, or 400 with the reason it was refused.
 
 use std::net::SocketAddr;
 
@@ -14,7 +15,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
 
-use crate::state::{Client, Rejected, State};
+use crate::state::{Client, Mode, Rejected, State};
 
 /// Builds the router over a state client.
 pub fn router(client: Client) -> Router {
@@ -22,6 +23,7 @@ pub fn router(client: Client) -> Router {
         .route("/api/v0/state", get(get_state))
         .route("/api/v0/setpoint", put(put_setpoint))
         .route("/api/v0/power_fraction", put(put_power_fraction))
+        .route("/api/v0/mode", put(put_mode))
         .with_state(client)
 }
 
@@ -54,8 +56,15 @@ async fn put_power_fraction(
     reply(
         &client,
         "power fraction",
-        client.set_power_fraction(fraction).await,
+        client.set_power_fraction_by_hand(fraction).await,
     )
+}
+
+async fn put_mode(
+    Shared(client): Shared<Client>,
+    Json(mode): Json<Mode>,
+) -> Result<Json<State>, (StatusCode, String)> {
+    reply(&client, "mode", client.set_mode(mode).await)
 }
 
 /// Answers a change with the snapshot after it, or with the reason
@@ -161,6 +170,7 @@ mod tests {
         assert_eq!(status, 200);
         let after: State = serde_json::from_str(&body).unwrap();
         assert_eq!(after.power_fraction, Some(0.3));
+        assert_eq!(after.mode, Mode::Manual);
 
         let (status, body) = tokio::task::spawn_blocking(move || put_number(&url, 2.0))
             .await
@@ -168,6 +178,26 @@ mod tests {
         assert_eq!(status, 400);
         assert!(body.contains("2"), "body names the value: {body}");
         assert_eq!(client.state().power_fraction, Some(0.3));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mode_is_a_json_string() {
+        let (client, _task) = state::spawn(State::new(50.0, &["bath"]));
+        let base = serve_ephemeral(client.clone()).await;
+
+        let (status, body) = tokio::task::spawn_blocking(move || {
+            let mut response = agent()
+                .put(format!("{base}/api/v0/mode"))
+                .send_json("manual")
+                .unwrap();
+            let status = response.status().as_u16();
+            (status, response.body_mut().read_to_string().unwrap())
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 200);
+        assert!(body.contains("\"mode\":\"manual\""), "{body}");
+        assert_eq!(client.state().mode, Mode::Manual);
     }
 
     #[tokio::test(flavor = "multi_thread")]

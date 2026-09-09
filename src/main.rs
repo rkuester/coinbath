@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use coinbath::config::Config;
 use coinbath::state::{self, Client, State};
-use coinbath::{api, mujina, probes, sim};
+use coinbath::{api, control, mujina, probes, sim};
 
 /// The coinbath daemon.
 #[derive(Parser)]
@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
     } else {
         tokio::spawn(mujina::run(client.clone(), config.mujina_url.clone()))
     };
+    let mut control = tokio::spawn(control::run(client.clone(), config.control));
     let mut api = tokio::spawn(api::serve(client.clone(), config.api_listen));
     let logger = tokio::spawn(log_changes(client.clone()));
 
@@ -80,12 +81,14 @@ async fn main() -> Result<()> {
         r = wait_for_shutdown() => r,
         r = &mut probes => Err(stopped_early("probes", r)),
         r = &mut miner => Err(stopped_early("miner client", r)),
+        r = &mut control => Err(stopped_early("control loop", r)),
         r = &mut api => Err(stopped_early("API", r)),
     };
     tracing::info!("shutting down");
 
     probes.abort();
     miner.abort();
+    control.abort();
     api.abort();
     logger.abort();
     drop(client);
@@ -119,6 +122,7 @@ async fn log_changes(client: Client) {
         tracing::debug!(
             setpoint_c = state.setpoint_c,
             probes = probes.join(" "),
+            mode = ?state.mode,
             power_fraction = state.power_fraction,
             miner_online = state.miner.online,
             miner_power_w = state.miner.power_w,

@@ -9,6 +9,14 @@ setpoint_c = 51.1
 # The miner's REST API. Mujina next door, by default.
 # mujina_url = "http://127.0.0.1:7785"
 
+# Control loop gains: share of full power per degree of error, and
+# per degree-second of accumulated error. The defaults give full
+# power from two degrees below the setpoint and an integral of
+# about ten minutes.
+# [control]
+# kp = 0.5
+# ki = 0.0008
+
 # The ADS1015 ADC and the thermistor dividers it reads.
 # i2c_bus = "/dev/i2c-1"
 # Divider supply in volts, used when vcc_channel is unset or reads

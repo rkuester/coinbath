@@ -48,13 +48,26 @@ pub struct Miner {
     pub power_ceiling: Option<f64>,
 }
 
+/// Who decides the share of full power to ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// The control loop, from the bath temperature.
+    Auto,
+    /// Whoever last set it by hand.
+    Manual,
+}
+
 /// The snapshot the state task publishes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
     /// Target bath temperature in degrees Celsius.
     pub setpoint_c: f64,
+    pub mode: Mode,
     /// The share of full power Coinbath asks of the miner, 0.0 to
     /// 1.0, or None while nothing has asked and the miner decides.
+    /// The control loop sets it in automatic mode; a client that
+    /// sets it puts the state in manual mode.
     pub power_fraction: Option<f64>,
     pub probes: Vec<Probe>,
     /// The divider supply as last measured, in volts.
@@ -68,6 +81,7 @@ impl State {
     pub fn new(setpoint_c: f64, probe_names: &[&str]) -> Self {
         Self {
             setpoint_c,
+            mode: Mode::Auto,
             power_fraction: None,
             probes: probe_names
                 .iter()
@@ -103,9 +117,17 @@ pub enum Command {
         celsius: f64,
         reply: oneshot::Sender<Result<()>>,
     },
-    /// Sets the share of full power to ask of the miner.
+    /// Sets the share of full power to ask of the miner. From the
+    /// control loop in automatic mode; from anyone else, it also
+    /// switches to manual mode.
     SetPowerFraction {
         fraction: f64,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// Hands the power request to the control loop or takes it
+    /// away.
+    SetMode {
+        mode: Mode,
         reply: oneshot::Sender<Result<()>>,
     },
     /// Records a probe reading, by probe index. `celsius` is None
@@ -151,11 +173,28 @@ impl Client {
     }
 
     /// Sets the share of full power to ask of the miner and waits
-    /// for the state task to accept or reject it.
+    /// for the state task to accept or reject it. Leaves the mode
+    /// alone: this is the control loop's call.
     pub async fn set_power_fraction(&self, fraction: f64) -> Result<()> {
         let (reply, response) = oneshot::channel();
         self.send(Command::SetPowerFraction { fraction, reply })
             .await?;
+        response
+            .await
+            .map_err(|_| anyhow!("state task dropped the reply"))?
+    }
+
+    /// Sets the share of full power by hand, which also puts the
+    /// state in manual mode so the control loop stays out of it.
+    pub async fn set_power_fraction_by_hand(&self, fraction: f64) -> Result<()> {
+        self.set_mode(Mode::Manual).await?;
+        self.set_power_fraction(fraction).await
+    }
+
+    /// Sets the mode and waits for the state task to apply it.
+    pub async fn set_mode(&self, mode: Mode) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::SetMode { mode, reply }).await?;
         response
             .await
             .map_err(|_| anyhow!("state task dropped the reply"))?
@@ -208,10 +247,19 @@ fn apply(state: &mut State, command: Command) -> bool {
             let accepted = result.is_ok();
             if accepted {
                 state.power_fraction = Some(fraction);
-                tracing::info!(fraction, "power fraction changed");
+                tracing::info!(fraction, mode = ?state.mode, "power fraction changed");
             }
             let _ = reply.send(result);
             accepted
+        }
+        Command::SetMode { mode, reply } => {
+            let changed = state.mode != mode;
+            if changed {
+                state.mode = mode;
+                tracing::info!(?mode, "mode changed");
+            }
+            let _ = reply.send(Ok(()));
+            changed
         }
         Command::ProbeReading {
             index,
@@ -286,6 +334,21 @@ mod tests {
 
         watcher.changed().await.unwrap();
         assert_eq!(watcher.borrow().power_fraction, Some(0.25));
+    }
+
+    #[tokio::test]
+    async fn a_hand_set_power_fraction_takes_manual_mode() {
+        let (client, _task) = spawn(State::new(50.0, &["bath"]));
+        assert_eq!(client.state().mode, Mode::Auto);
+
+        client.set_power_fraction_by_hand(0.5).await.unwrap();
+        let state = client.state();
+        assert_eq!(state.mode, Mode::Manual);
+        assert_eq!(state.power_fraction, Some(0.5));
+
+        client.set_mode(Mode::Auto).await.unwrap();
+        assert_eq!(client.state().mode, Mode::Auto);
+        assert_eq!(client.state().power_fraction, Some(0.5));
     }
 
     #[tokio::test]

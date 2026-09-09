@@ -34,6 +34,17 @@ miner and runs a simulated bath heated by a simulated miner. With
 full power the real Mujina reports, which is how the miner client
 is exercised against Mujina's CPU backend on a laptop.
 
+## The control loop
+
+The loop steps every 2 s in automatic mode, the mode at start. It
+takes the bath probe's error from the setpoint through a
+proportional-integral law with anti-windup and asks the miner for
+the result, 0 to 1. The gains live under `[control]` in the
+configuration; the defaults give full power from two degrees
+below the setpoint and an integral of about ten minutes. Setting
+the power fraction by hand puts the state in manual mode, where
+the loop stays out of it. Automatic mode starts the loop afresh.
+
 ## The miner
 
 The Mujina client polls the miner's tree at `GET /api/v0` every
@@ -60,9 +71,13 @@ curl http://127.0.0.1:7786/api/v0/state
 curl -X PUT -H 'content-type: application/json' -d '51.1' \
   http://127.0.0.1:7786/api/v0/setpoint
 
-# Ask the miner for a quarter of its full power
+# Ask the miner for a quarter of its full power, by hand
 curl -X PUT -H 'content-type: application/json' -d '0.25' \
   http://127.0.0.1:7786/api/v0/power_fraction
+
+# Hand the power request back to the control loop
+curl -X PUT -H 'content-type: application/json' -d '"auto"' \
+  http://127.0.0.1:7786/api/v0/mode
 ```
 
 A setpoint outside 0 to 95 C, or a power fraction outside 0 to 1,
@@ -75,7 +90,8 @@ coinbath-cli status          # setpoint, probes, miner, in C and F
 coinbath-cli json            # the raw snapshot
 coinbath-cli setpoint 51.1   # degrees Celsius
 coinbath-cli setpoint -f 124 # degrees Fahrenheit
-coinbath-cli power 0.25      # a share of the miner's full power
+coinbath-cli power 0.25      # a share of full power, by hand
+coinbath-cli mode auto       # back to the control loop
 ```
 
 ## Hardware

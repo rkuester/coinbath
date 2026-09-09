@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::adc::Channel;
+use crate::control::Gains;
 use crate::probes::{ProbeConfig, ProbesConfig};
 
 /// Top-level configuration, read from a TOML file.
@@ -21,6 +22,8 @@ struct File {
     api_listen: SocketAddr,
     #[serde(default = "default_mujina_url")]
     mujina_url: String,
+    #[serde(default)]
+    control: Gains,
     #[serde(default = "default_i2c_bus")]
     i2c_bus: String,
     #[serde(default = "default_vcc")]
@@ -40,6 +43,8 @@ pub struct Config {
     pub api_listen: SocketAddr,
     /// Base URL of the miner's REST API.
     pub mujina_url: String,
+    /// Control loop tuning.
+    pub control: Gains,
     /// The ADC and its thermistors.
     pub probes: ProbesConfig,
 }
@@ -80,6 +85,7 @@ impl Config {
             setpoint_c: file.setpoint_c,
             api_listen: file.api_listen,
             mujina_url: file.mujina_url,
+            control: file.control,
             probes: ProbesConfig {
                 i2c_bus: file.i2c_bus,
                 vcc: file.vcc,
@@ -130,6 +136,18 @@ mod tests {
         let config =
             Config::parse("setpoint_c = 51.1\nmujina_url = \"http://rig:7785\"\n").unwrap();
         assert_eq!(config.mujina_url, "http://rig:7785");
+    }
+
+    #[test]
+    fn control_gains_default_and_override_by_key() {
+        let config = Config::parse("setpoint_c = 51.1\n").unwrap();
+        assert_eq!(config.control, Gains::default());
+
+        let config = Config::parse("setpoint_c = 51.1\n[control]\nkp = 0.25\n").unwrap();
+        assert_eq!(config.control.kp, 0.25);
+        assert_eq!(config.control.ki, Gains::default().ki);
+
+        assert!(Config::parse("setpoint_c = 51.1\n[control]\nkd = 1.0\n").is_err());
     }
 
     #[test]

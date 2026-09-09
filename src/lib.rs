@@ -11,6 +11,7 @@ pub mod adc;
 pub mod api;
 pub mod calibration;
 pub mod config;
+pub mod control;
 pub mod mujina;
 pub mod probes;
 pub mod sim;

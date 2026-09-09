@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use coinbath::calibration::{self, Point, Points, Sample, Terms};
-use coinbath::state::State;
+use coinbath::state::{Mode, State};
 
 #[derive(Parser)]
 #[command(name = "coinbath-cli", about = "Talk to a running coinbath")]
@@ -38,10 +38,17 @@ enum Command {
         fahrenheit: bool,
     },
 
-    /// Ask the miner for a share of its full power, 0 to 1.
+    /// Ask the miner for a share of its full power by hand, which
+    /// takes the request away from the control loop.
     Power {
         /// The share of full power, from 0 (off) to 1 (full).
         fraction: f64,
+    },
+
+    /// Hand the power request to the control loop, or take it away.
+    Mode {
+        /// auto or manual.
+        mode: ModeArg,
     },
 
     /// Record a calibration point: average the probes for a while
@@ -87,6 +94,21 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ModeArg {
+    Auto,
+    Manual,
+}
+
+impl From<ModeArg> for Mode {
+    fn from(mode: ModeArg) -> Self {
+        match mode {
+            ModeArg::Auto => Mode::Auto,
+            ModeArg::Manual => Mode::Manual,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -112,12 +134,20 @@ fn main() -> Result<()> {
             } else {
                 temperature
             };
-            let state = put_number(&agent, &cli.url, "setpoint", celsius)?;
+            let state = put_json(&agent, &cli.url, "setpoint", celsius)?;
             println!("setpoint {}", temp(state.setpoint_c));
         }
         Command::Power { fraction } => {
-            let state = put_number(&agent, &cli.url, "power_fraction", fraction)?;
-            println!("power {}", share(state.power_fraction));
+            let state = put_json(&agent, &cli.url, "power_fraction", fraction)?;
+            println!(
+                "power {}, {}",
+                share(state.power_fraction),
+                mode(state.mode)
+            );
+        }
+        Command::Mode { mode: m } => {
+            let state = put_json(&agent, &cli.url, "mode", Mode::from(m))?;
+            println!("{}", mode(state.mode));
         }
         Command::Calibrate {
             reference,
@@ -255,9 +285,14 @@ fn calibrate(
     })
 }
 
-/// Writes a bare number to one of the API's PUT endpoints and
+/// Writes a JSON value to one of the API's PUT endpoints and
 /// returns the snapshot after the change.
-fn put_number(agent: &ureq::Agent, url: &str, endpoint: &str, value: f64) -> Result<State> {
+fn put_json<T: serde::Serialize>(
+    agent: &ureq::Agent,
+    url: &str,
+    endpoint: &str,
+    value: T,
+) -> Result<State> {
     let mut response = agent
         .put(format!("{url}/api/v0/{endpoint}"))
         .send_json(value)
@@ -301,9 +336,10 @@ fn print_status(state: &State) {
         _ => String::new(),
     };
     println!(
-        "{:9}{} asked, miner holding {}{capped}",
+        "{:9}{} asked, {}, miner holding {}{capped}",
         "power",
         share(state.power_fraction),
+        mode(state.mode),
         share(miner.power_fraction)
     );
     if !miner.online {
@@ -323,6 +359,13 @@ fn print_status(state: &State) {
         .map(|c| format!("chip {c:.1} C"))
         .unwrap_or_else(|| "chip temperature unknown".into());
     println!("{:9}{hashrate}, {power}, {chip}", "miner");
+}
+
+fn mode(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Auto => "auto",
+        Mode::Manual => "manual",
+    }
 }
 
 /// Formats a share of full power, or its absence.
