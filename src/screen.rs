@@ -407,44 +407,49 @@ impl Screen {
         c.text_right(note, rx + rw, bar.y + c.px(18.0), &chip);
     }
 
-    /// The boards page: one row per board with the chain's
-    /// electricals, and a totals row.
+    /// The details page: a table of the boards' electricals, a grid
+    /// of every chip's rate, and a line of the miner's and
+    /// Coinbath's own state.
     fn boards(&self, c: &mut Canvas, state: &State) {
         let top = c.px(46.0);
         let x = c.px(16.0);
-        let label = c.style(Face::Medium, 16.0, DIM);
-        let value = c.style(Face::Bold, 24.0, TEXT);
-        let total = c.style(Face::Bold, 24.0, DIM);
-
-        c.text(label, x, top, "BOARD");
-        for column in COLUMNS {
-            c.text_right(label, c.px(column.right), top, column.label);
-        }
-        let row_h = c.px(36.0);
+        let label = c.style(Face::Medium, 14.0, DIM);
+        let value = c.style(Face::Bold, 20.0, TEXT);
         let rule = |c: &mut Canvas, y: i32| {
             c.fill(
                 Area {
                     x,
-                    y: y - c.px(4.0),
+                    y,
                     width: c.width - 2 * x,
                     height: c.px(1.0),
                 },
                 BORDER,
             );
         };
-        let mut y = top + c.px(24.0);
-        rule(c, y);
-        let boards = &state.miner.boards;
-        for board in boards {
-            let name = board
+        let serial = |board: &Board| {
+            board
                 .name
                 .rsplit_once('-')
-                .map(|(_, serial)| serial)
-                .unwrap_or(&board.name);
-            c.text(value, x, y + c.px(6.0), name);
+                .map(|(_, serial)| serial.to_string())
+                .unwrap_or_else(|| board.name.clone())
+        };
+
+        // The boards table.
+        c.text(label, x, top, "BOARD");
+        for column in COLUMNS {
+            c.text_right(label, c.px(column.right), top, column.label);
+        }
+        let row_h = c.px(26.0);
+        let mut y = top + c.px(20.0);
+        rule(c, y - c.px(3.0));
+        let boards = &state.miner.boards;
+        for board in boards {
+            c.text(value, x, y, &serial(board));
             for column in COLUMNS {
-                let text = column.format((column.field)(board));
-                c.text_right(value, c.px(column.right), y + c.px(6.0), &text);
+                let text = (column.field)(board)
+                    .map(column.format)
+                    .unwrap_or_else(|| "--".to_string());
+                c.text_right(value, c.px(column.right), y, &text);
             }
             y += row_h;
         }
@@ -454,94 +459,203 @@ impl Screen {
             } else {
                 "miner offline"
             };
-            c.text(c.style(Face::Medium, 24.0, DIM), x, y + c.px(6.0), message);
+            c.text(c.style(Face::Medium, 20.0, DIM), x, y, message);
             y += row_h;
         }
-        rule(c, y);
-        let miner = &state.miner;
-        c.text(total, x, y + c.px(6.0), "TOTAL");
-        for (column, value) in [
-            (&COLUMNS[0], miner.chip_temperature_c),
-            (&COLUMNS[6], miner.power_w),
-            (&COLUMNS[7], miner.hashrate_hs.map(|h| h / 1e12)),
-        ] {
-            c.text_right(
-                total,
-                c.px(column.right),
-                y + c.px(8.0),
-                &column.format(value),
-            );
+
+        // The chip grid: one row per board, one cell per chip with
+        // its rate in GH/s, red where it has hardware errors.
+        y += c.px(8.0);
+        c.text(label, x, y, "CHIP GH/s");
+        let (cell_left, cell_step, cell_w) = (c.px(110.0), c.px(104.0), c.px(90.0));
+        let cell_x = move |k: usize| cell_left + k as i32 * cell_step;
+        let chips_across = boards.iter().map(|b| b.chips.len()).max().unwrap_or(0);
+        for k in 0..chips_across {
+            c.text_right(label, cell_x(k) + cell_w, y, &format!("{k}"));
         }
+        y += c.px(18.0);
+        let chip_row_h = c.px(20.0);
+        let chip_value = c.style(Face::Bold, 15.0, TEXT);
+        let chip_bad = Style {
+            color: ACCENT,
+            ..chip_value
+        };
+        for board in boards {
+            c.text(c.style(Face::Medium, 15.0, DIM), x, y, &serial(board));
+            for (k, chip) in board.chips.iter().enumerate() {
+                let text = chip
+                    .hashrate_hs
+                    .map(|h| format!("{:.0}", h / 1e9))
+                    .unwrap_or_else(|| "--".to_string());
+                let style = if chip.hardware_errors > 0 {
+                    chip_bad
+                } else {
+                    chip_value
+                };
+                c.text_right(style, cell_x(k) + cell_w, y, &text);
+            }
+            y += chip_row_h;
+        }
+
+        // The status line: the miner's document and Coinbath's own
+        // raw readings and state, at the bottom.
+        let miner = &state.miner;
+        let line_y = c.height - c.px(34.0);
+        let note = c.style(Face::Medium, 14.0, DIM);
+        let strong = c.style(Face::Medium, 14.0, TEXT);
+        let mut parts: Vec<(String, Style)> = Vec::new();
+        if let Some(pool) = &miner.pool {
+            parts.push((
+                pool.trim_start_matches("stratum+tcp://").to_string(),
+                strong,
+            ));
+        }
+        if let Some(d) = miner.difficulty {
+            parts.push((format!("diff {d:.0}"), note));
+        }
+        if let Some(n) = miner.shares_submitted {
+            parts.push((format!("{n} shares"), note));
+        }
+        if let Some(secs) = miner.uptime_secs {
+            parts.push((format!("up {}", uptime(secs)), note));
+        }
+        let mut px = x;
+        for (text, style) in parts {
+            c.text(style, px, line_y, &text);
+            px += c.measure(style, &text) + c.px(20.0);
+        }
+
+        let probes_y = c.height - c.px(18.0);
+        let mut probes: Vec<String> = state
+            .probes
+            .iter()
+            .map(|p| match p.volts {
+                Some(v) => format!("{} {v:.3} V", p.name),
+                None => format!("{} --", p.name),
+            })
+            .collect();
+        if let Some(v) = state.supply_v {
+            probes.push(format!("supply {v:.3} V"));
+        }
+        c.text(note, x, probes_y, &probes.join("   "));
+
+        let mode = match state.mode {
+            Mode::Auto => "auto",
+            Mode::Manual => "manual",
+        };
+        let asked = state
+            .power_fraction
+            .map(|f| format!("asking {:.0}%", f * 100.0))
+            .unwrap_or_else(|| "asking nothing yet".to_string());
+        let fault = control::fault(state, &self.limits)
+            .map(|f| f.to_string())
+            .unwrap_or_else(|| "no fault".to_string());
+        c.text_right(
+            note,
+            c.width - x,
+            probes_y,
+            &format!("{mode}, {asked}, {fault}"),
+        );
     }
 }
 
 /// One column of the boards table: its heading, its right edge in
-/// design pixels, the board field it shows, and its decimals.
+/// design pixels, the board field it shows, and how to print it.
 struct Column {
     label: &'static str,
     right: f32,
     field: fn(&Board) -> Option<f64>,
-    decimals: usize,
+    format: fn(f64) -> String,
 }
 
-impl Column {
-    fn format(&self, value: Option<f64>) -> String {
-        value
-            .map(|v| format!("{v:.*}", self.decimals))
-            .unwrap_or_else(|| "--".to_string())
-    }
+fn whole(v: f64) -> String {
+    format!("{v:.0}")
+}
+
+fn tenths(v: f64) -> String {
+    format!("{v:.1}")
+}
+
+fn thousandths(v: f64) -> String {
+    format!("{v:.3}")
+}
+
+fn percent(v: f64) -> String {
+    format!("{:.0}%", v * 100.0)
 }
 
 const COLUMNS: &[Column] = &[
     Column {
         label: "CHIP \u{00B0}C",
-        right: 430.0,
+        right: 330.0,
         field: |b| b.chip_temperature_c,
-        decimals: 0,
+        format: whole,
     },
     Column {
         label: "BOARD \u{00B0}C",
-        right: 560.0,
+        right: 450.0,
         field: |b| b.board_temperature_c,
-        decimals: 0,
+        format: whole,
     },
     Column {
         label: "REG \u{00B0}C",
-        right: 690.0,
+        right: 560.0,
         field: |b| b.regulator_temperature_c,
-        decimals: 0,
+        format: whole,
     },
     Column {
         label: "IN V",
-        right: 810.0,
+        right: 660.0,
         field: |b| b.input_voltage_v,
-        decimals: 1,
+        format: tenths,
     },
     Column {
         label: "CORE V",
-        right: 1060.0,
+        right: 770.0,
         field: |b| b.voltage_v,
-        decimals: 3,
+        format: thousandths,
     },
     Column {
         label: "A",
-        right: 940.0,
+        right: 870.0,
         field: |b| b.current_a,
-        decimals: 1,
+        format: tenths,
     },
     Column {
         label: "W",
-        right: 1180.0,
+        right: 970.0,
         field: |b| b.power_w,
-        decimals: 0,
+        format: whole,
     },
     Column {
         label: "TH/s",
-        right: 1310.0,
+        right: 1080.0,
         field: |b| b.hashrate_hs.map(|h| h / 1e12),
-        decimals: 2,
+        format: |v| format!("{v:.2}"),
+    },
+    Column {
+        label: "HELD",
+        right: 1190.0,
+        field: |b| b.power_fraction,
+        format: percent,
+    },
+    Column {
+        label: "CAP",
+        right: 1300.0,
+        field: |b| b.power_ceiling,
+        format: percent,
     },
 ];
+
+/// Hours and minutes, or minutes and seconds under an hour.
+fn uptime(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else {
+        format!("{m}m {s:02}s")
+    }
+}
 
 /// Degrees Fahrenheit with the sign, from Celsius.
 fn fahrenheit(celsius: f64, decimals: usize) -> String {
@@ -743,7 +857,7 @@ fn rgb(c: Rgb) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Miner;
+    use crate::state::{Chip, Miner};
 
     fn warm_state() -> State {
         let mut state = State::new(51.1, &["bath", "inlet", "outlet"]);
@@ -769,8 +883,20 @@ mod tests {
                 board_temperature_c: Some(43.5),
                 power_fraction: Some(0.6),
                 power_ceiling: Some(0.6),
+                chips: (0..12)
+                    .map(|k| Chip {
+                        address: k * 2,
+                        nonces: 100,
+                        hardware_errors: u64::from(k == 3),
+                        hashrate_hs: Some(0.3e12),
+                    })
+                    .collect(),
             }],
             power_ceiling: Some(0.6),
+            uptime_secs: Some(3725),
+            shares_submitted: Some(42),
+            pool: Some("stratum+tcp://pool.example:3333".into()),
+            difficulty: Some(2328.0),
         };
         state
     }
@@ -837,6 +963,12 @@ mod tests {
             screen.render(&mut frame, Page::Main, &state, &Histories::default());
             screen.render(&mut frame, Page::Boards, &state, &Histories::default());
         }
+    }
+
+    #[test]
+    fn uptime_reads_as_hours_or_minutes() {
+        assert_eq!(uptime(3725), "1h 02m");
+        assert_eq!(uptime(65), "1m 05s");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::state::{Board, Client, Command, Miner};
+use crate::state::{Board, Chip, Client, Command, Miner};
 
 /// Room temperature the bath cools toward, in degrees Celsius.
 const AMBIENT_C: f64 = 22.0;
@@ -31,8 +31,10 @@ const CHIP_LIMIT_C: f64 = 75.0;
 const CHIP_BAND_C: f64 = 10.0;
 /// How often the simulator reports.
 const TICK: Duration = Duration::from_secs(1);
-/// The boards the simulated miner reports, sharing its output.
+/// The boards the simulated miner reports, sharing its output, and
+/// the chips on each.
 const BOARDS: [&str; 2] = ["emberone-00-sim00001", "emberone-00-sim00002"];
+const CHIPS_PER_BOARD: usize = 12;
 
 /// A first-order model of water heated by a miner.
 #[derive(Debug, Clone)]
@@ -108,8 +110,10 @@ pub async fn run_bath(client: Client) -> Result<()> {
 pub async fn run_miner(client: Client) -> Result<()> {
     let mut ticker = tokio::time::interval(TICK);
     let mut held = vec![1.0; BOARDS.len()];
+    let mut ticks: u64 = 0;
     loop {
         ticker.tick().await;
+        ticks += 1;
         let state = client.state();
         let asked = state.power_fraction.unwrap_or(1.0);
         let water_c = state.probes[0].celsius.unwrap_or(AMBIENT_C);
@@ -122,6 +126,19 @@ pub async fn run_miner(client: Client) -> Result<()> {
                 let ceiling = ((CHIP_LIMIT_C - chip_c) / CHIP_BAND_C).clamp(0.0, 1.0);
                 held[i] = asked.min(ceiling);
                 let fraction = held[i];
+                // Chips at even addresses, each a little different,
+                // one of them with a hardware error now and then.
+                let chips = (0..CHIPS_PER_BOARD)
+                    .map(|k| Chip {
+                        address: (k * 2) as u64,
+                        nonces: ticks * (k as u64 % 3 + 1),
+                        hardware_errors: if k == 7 { ticks / 50 } else { 0 },
+                        hashrate_hs: Some(
+                            FULL_HASHRATE_HS * fraction * share / CHIPS_PER_BOARD as f64
+                                * (0.9 + 0.02 * k as f64),
+                        ),
+                    })
+                    .collect();
                 Board {
                     name: name.to_string(),
                     hashrate_hs: Some(FULL_HASHRATE_HS * fraction * share),
@@ -134,6 +151,7 @@ pub async fn run_miner(client: Client) -> Result<()> {
                     board_temperature_c: Some(water_c + 5.0 * fraction),
                     power_fraction: Some(fraction),
                     power_ceiling: Some(ceiling),
+                    chips,
                 }
             })
             .collect();
@@ -153,6 +171,10 @@ pub async fn run_miner(client: Client) -> Result<()> {
                     .filter_map(|b| b.power_ceiling)
                     .reduce(f64::min),
                 boards,
+                uptime_secs: Some(ticks),
+                shares_submitted: Some(ticks / 20),
+                pool: Some("stratum+tcp://sim.pool:3333".to_string()),
+                difficulty: Some(2328.0),
             }))
             .await?;
     }

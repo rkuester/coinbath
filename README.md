@@ -118,9 +118,14 @@ moves it one degree, the bath, inlet, and outlet temperatures
 with ten minutes of sparklines, the bath's setpoint as a
 reference line, the hash rate, the power, and a bar of the share
 the miner holds against the share asked. The header names the
-mode and any fault, and a button flips to the boards page, one
+mode and any fault, and a button flips to the details page: one
 row per board with its chip, board, and regulator temperatures,
-rail voltages, current, power, and hash rate.
+rail voltages, current, power, hash rate, and the share it holds
+against its ceiling; a grid of every chip's rate in GH/s, red
+where the chip has reported hardware errors; the pool, its
+difficulty, the shares submitted, and the miner's uptime; and
+Coinbath's own raw probe and supply volts, mode, request, and
+fault.
 
 The layout is designed for the 10-inch bar panel at 1424 by 280
 and scales with the frame's height. The framebuffer's size and

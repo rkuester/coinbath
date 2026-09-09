@@ -3,8 +3,11 @@
 //!
 //! Every poll reads the whole tree at `GET /api/v0` and reports what
 //! Coinbath cares about: the hash rate summed over threads, the
-//! power summed over regulators, the hottest chip, and the share of
-//! full power the miner holds. Whenever the state's requested share
+//! power summed over regulators, the hottest chip, the share of
+//! full power the threads hold, the lowest ceiling a board puts on
+//! its thread, and each board's chips. The miner's own document at
+//! `GET /api/v0/miner` adds its uptime, shares, and job source.
+//! Whenever the state's requested share
 //! differs from what the miner was last told, the client writes it
 //! to `PUT /api/v0/target_power_fraction`, and it writes it again
 //! after the miner comes back from an outage, since a restarted
@@ -16,7 +19,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::task;
 
-use crate::state::{Board, Client, Command, Miner};
+use crate::state::{Board, Chip, Client, Command, Miner};
 
 /// Where the miner's API is by default. Mujina binds to loopback
 /// on port 7785 unless told otherwise.
@@ -63,7 +66,13 @@ pub async fn run(client: Client, url: String) -> Result<()> {
                 tracing::info!(fraction, "asked the miner for a share of full power");
             }
             let tree = api.get_tree().await?;
-            Ok(summarize(&tree))
+            let mut miner = summarize(&tree);
+            // The miner document is detail; the tree is the report.
+            match api.get_miner().await {
+                Ok(doc) => add_miner_document(&mut miner, &doc),
+                Err(e) => tracing::debug!("miner document: {e:#}"),
+            }
+            Ok(miner)
         }
         .await;
 
@@ -121,20 +130,61 @@ pub fn summarize(tree: &Value) -> Miner {
         power_fraction: held.mean().or(asked),
         power_ceiling: ceiling.min(),
         boards,
+        uptime_secs: None,
+        shares_submitted: None,
+        pool: None,
+        difficulty: None,
+    }
+}
+
+/// Takes what Coinbath shows from the miner's own document:
+/// uptime, shares, and the first job source with its difficulty.
+pub fn add_miner_document(miner: &mut Miner, doc: &Value) {
+    miner.uptime_secs = doc.get("uptime_secs").and_then(Value::as_u64);
+    miner.shares_submitted = doc.get("shares_submitted").and_then(Value::as_u64);
+    if let Some(source) = doc
+        .get("sources")
+        .and_then(Value::as_array)
+        .and_then(|s| s.first())
+    {
+        miner.pool = source
+            .get("url")
+            .or(source.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        miner.difficulty = number(source, "difficulty");
     }
 }
 
 /// Reduces one board's subtree. The core rail is the regulator
 /// named `core`; power is summed over every regulator all the same.
+/// Chips come in chain order, which is their key in the tree.
 fn summarize_board(name: &str, node: &Value) -> Board {
     let mut hashrate = Sum::default();
     let mut held = Mean::default();
     let mut ceiling = Min::default();
+    let mut chips: Vec<(usize, Chip)> = Vec::new();
     for thread in objects(node.get("threads")) {
         hashrate.add(number(thread, "hashes_per_s"));
         held.add(number(thread, "power_fraction"));
         ceiling.add(number(thread, "power_ceiling"));
+        for (index, chip) in entries(thread.get("chips")) {
+            let Ok(index) = index.parse::<usize>() else {
+                continue;
+            };
+            let count = |key| chip.get(key).and_then(Value::as_u64).unwrap_or(0);
+            chips.push((
+                index,
+                Chip {
+                    address: count("address"),
+                    nonces: count("nonces"),
+                    hardware_errors: count("hardware_errors"),
+                    hashrate_hs: number(chip, "hashes_per_s"),
+                },
+            ));
+        }
     }
+    chips.sort_by_key(|(index, _)| *index);
     let mut power = Sum::default();
     for regulator in objects(node.get("regulators")) {
         power.add(number(regulator, "power_w"));
@@ -162,6 +212,7 @@ fn summarize_board(name: &str, node: &Value) -> Board {
         board_temperature_c: board_sensor.max(),
         power_fraction: held.mean(),
         power_ceiling: ceiling.min(),
+        chips: chips.into_iter().map(|(_, chip)| chip).collect(),
     }
 }
 
@@ -292,6 +343,27 @@ impl Api {
         .context("tree request panicked")?
     }
 
+    async fn get_miner(&self) -> Result<Value> {
+        let api = self.clone();
+        task::spawn_blocking(move || {
+            let mut response = api
+                .agent
+                .get(format!("{}/api/v0/miner", api.url))
+                .call()
+                .context("get the miner document")?;
+            let status = response.status();
+            if !status.is_success() {
+                bail!("get the miner document: {status}");
+            }
+            response
+                .body_mut()
+                .read_json()
+                .context("parse the miner document")
+        })
+        .await
+        .context("miner document request panicked")?
+    }
+
     async fn put_power_fraction(&self, fraction: f64) -> Result<()> {
         let api = self.clone();
         task::spawn_blocking(move || {
@@ -344,7 +416,11 @@ mod tests {
                     }},
                     "threads": {"0": {
                         "hashes_per_s": 4.0e12, "status": "present",
-                        "power_fraction": 0.5, "power_ceiling": 1.0
+                        "power_fraction": 0.5, "power_ceiling": 1.0,
+                        "chips": {
+                            "1": {"address": 2, "nonces": 40, "hardware_errors": 1, "hashes_per_s": 2.0e12},
+                            "0": {"address": 0, "nonces": 41, "hardware_errors": 0, "hashes_per_s": 2.0e12}
+                        }
                     }}
                 },
                 "emberone-00-328679e0": {
@@ -400,9 +476,41 @@ mod tests {
         assert_eq!(first.regulator_temperature_c, Some(55.0));
         assert_eq!(first.board_temperature_c, Some(43.5));
         assert_eq!(first.power_fraction, Some(0.5));
+        let addresses: Vec<u64> = first.chips.iter().map(|c| c.address).collect();
+        assert_eq!(addresses, [0, 2], "chips in chain order");
+        assert_eq!(first.chips[1].hardware_errors, 1);
+        assert_eq!(first.chips[0].hashrate_hs, Some(2.0e12));
+        assert!(miner.boards[2].chips.is_empty());
         assert_eq!(miner.boards[2].power_ceiling, Some(0.3));
         assert_eq!(miner.boards[0].chip_temperature_c, None);
         assert_eq!(miner.boards[0].power_fraction, None);
+    }
+
+    #[test]
+    fn the_miner_document_adds_uptime_shares_and_the_pool() {
+        let mut miner = Miner::default();
+        add_miner_document(
+            &mut miner,
+            &json!({
+                "uptime_secs": 3725, "hashrate": 9, "shares_submitted": 42, "paused": false,
+                "sources": [{"name": "pool", "url": "stratum+tcp://pool.example:3333", "difficulty": 2328}]
+            }),
+        );
+        assert_eq!(miner.uptime_secs, Some(3725));
+        assert_eq!(miner.shares_submitted, Some(42));
+        assert_eq!(
+            miner.pool.as_deref(),
+            Some("stratum+tcp://pool.example:3333")
+        );
+        assert_eq!(miner.difficulty, Some(2328.0));
+
+        let mut bare = Miner::default();
+        add_miner_document(
+            &mut bare,
+            &json!({"uptime_secs": 1, "sources": [{"name": "dummy"}]}),
+        );
+        assert_eq!(bare.pool.as_deref(), Some("dummy"));
+        assert_eq!(bare.difficulty, None);
     }
 
     #[test]
@@ -449,6 +557,7 @@ mod tests {
         let fake: Handle = Arc::default();
         let router = Router::new()
             .route("/api/v0", get(get_tree))
+            .route("/api/v0/miner", get(get_miner))
             .route("/api/v0/target_power_fraction", put(put_fraction))
             .with_state(fake.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -475,6 +584,16 @@ mod tests {
             }
         }
         Ok(Json(tree))
+    }
+
+    async fn get_miner(Shared(fake): Shared<Handle>) -> Result<Json<Value>, StatusCode> {
+        if fake.lock().unwrap().down {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        Ok(Json(json!({
+            "uptime_secs": 60, "hashrate": 0, "shares_submitted": 3, "paused": false,
+            "sources": [{"name": "dummy", "difficulty": 2328}]
+        })))
     }
 
     async fn put_fraction(
@@ -517,6 +636,8 @@ mod tests {
         let miner = report_where(&mut watcher, |m| m.online).await;
         assert_eq!(miner.power_w, Some(27.0));
         assert_eq!(miner.power_fraction, Some(1.0));
+        assert_eq!(miner.shares_submitted, Some(3));
+        assert_eq!(miner.pool.as_deref(), Some("dummy"));
         assert!(fake.lock().unwrap().puts.is_empty(), "nothing asked yet");
 
         client.set_power_fraction(0.25).await.unwrap();

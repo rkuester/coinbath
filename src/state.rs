@@ -25,6 +25,19 @@ pub struct Probe {
     pub volts: Option<f64>,
 }
 
+/// One chip on a board's chain, as the miner counts it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Chip {
+    /// The chip's address on the chain.
+    pub address: u64,
+    /// Nonces it has reported since the thread started, and how
+    /// many of them fell short of its own ticket mask.
+    pub nonces: u64,
+    pub hardware_errors: u64,
+    /// Its rate over the last five minutes, from its nonces.
+    pub hashrate_hs: Option<f64>,
+}
+
 /// One hash board, as the miner reports it. Every reading is None
 /// when the board does not report it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -50,6 +63,8 @@ pub struct Board {
     /// board is throttling its thread by heat.
     pub power_fraction: Option<f64>,
     pub power_ceiling: Option<f64>,
+    /// Its chips in chain order.
+    pub chips: Vec<Chip>,
 }
 
 /// What the miner reports, as far as Coinbath cares. Every reading
@@ -75,6 +90,13 @@ pub struct Miner {
     pub power_ceiling: Option<f64>,
     /// Every board, in the miner's order.
     pub boards: Vec<Board>,
+    /// From the miner's own document: how long it has run, the
+    /// shares it has submitted, and the job source it works for
+    /// with the difficulty that source set.
+    pub uptime_secs: Option<u64>,
+    pub shares_submitted: Option<u64>,
+    pub pool: Option<String>,
+    pub difficulty: Option<f64>,
 }
 
 /// Who decides the share of full power to ask for.
